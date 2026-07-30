@@ -25,6 +25,7 @@ struct MenuBarItemsView: View {
 
     @State private var selection: DockItem.ID?
     @State private var isShowingAppPicker = false
+    @State private var isShowingAddMenu = false
     @State private var isTargeted = false
 
     private var store: ConfigurationStore { environment.store }
@@ -98,10 +99,10 @@ struct MenuBarItemsView: View {
                     emptyState
                 }
             }
-            // Dropping an app bundle anywhere on the list adds it — the fastest path from
+            // Dropping an app or folder anywhere on the list adds it — the fastest path from
             // Finder to menu bar, and the one users try first.
             .dropDestination(for: URL.self) { urls, _ in
-                addApplications(urls)
+                addDroppedItems(urls)
             } isTargeted: { targeted in
                 isTargeted = targeted
             }
@@ -116,6 +117,30 @@ struct MenuBarItemsView: View {
             Divider()
             footer
         }
+        // The popup is an overlay on the sidebar rather than an attachment to the + button, so
+        // it is laid out — and clipped — by this window instead of escaping onto the desktop.
+        .overlay(alignment: .bottomLeading) {
+            if isShowingAddMenu {
+                ZStack(alignment: .bottomLeading) {
+                    // Click-anywhere-else to dismiss, the one behaviour a real menu gives free.
+                    Rectangle()
+                        .fill(.black.opacity(0.001))
+                        .onTapGesture { isShowingAddMenu = false }
+
+                    AddItemPopup(
+                        onChoose: { choice in
+                            isShowingAddMenu = false
+                            add(choice)
+                        },
+                        onDismiss: { isShowingAddMenu = false }
+                    )
+                    .padding(.leading, 5)
+                    .padding(.bottom, 33)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottomLeading)))
+            }
+        }
+        .animation(.spring(response: 0.24, dampingFraction: 0.85), value: isShowingAddMenu)
     }
 
     private var emptyState: some View {
@@ -123,7 +148,7 @@ struct MenuBarItemsView: View {
             Image(systemName: "square.and.arrow.down")
                 .font(.system(size: 26))
                 .foregroundStyle(.tertiary)
-            Text("Drag apps here")
+            Text("Drag apps or folders here")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Text("or use the + button below")
@@ -135,19 +160,16 @@ struct MenuBarItemsView: View {
 
     private var footer: some View {
         HStack(spacing: 0) {
-            Menu {
-                Button("Add App…") { isShowingAppPicker = true }
-                Button("Add Group") {
-                    store.addGroup()
-                    selection = store.configuration.items.last?.id
-                }
+            Button {
+                isShowingAddMenu.toggle()
             } label: {
                 Image(systemName: "plus")
+                    .rotationEffect(.degrees(isShowingAddMenu ? 45 : 0))
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .buttonStyle(.borderless)
             .frame(width: 28)
-            .help("Add an app or group")
+            .help("Add an app, folder, or group")
+            .accessibilityLabel("Add to menu bar")
 
             Button {
                 if let selection { store.remove(id: selection) }
@@ -188,12 +210,48 @@ struct MenuBarItemsView: View {
 
     // MARK: Actions
 
-    private func addApplications(_ urls: [URL]) -> Bool {
-        let bundles = urls.filter { $0.pathExtension == "app" }
-        guard !bundles.isEmpty else { return false }
-        for url in bundles {
+    private func add(_ choice: AddItemChoice) {
+        switch choice {
+        case .app:
+            isShowingAppPicker = true
+        case .folder:
+            chooseFolders()
+        case .group:
+            store.addGroup()
+            selection = store.configuration.items.last?.id
+        }
+    }
+
+    /// Folders are picked with `NSOpenPanel` rather than a MenuDock-drawn browser: it is the
+    /// panel every Mac user already knows, and it comes with sidebar favourites, iCloud Drive,
+    /// and network volumes that would take a month to reimplement badly.
+    private func chooseFolders() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Choose folders to open from the menu bar."
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        store.addFolders(at: panel.urls)
+        selection = store.configuration.items.last?.id
+    }
+
+    /// Accepts both app bundles and plain folders from one drop, since the user dragging things
+    /// out of a Finder window has no reason to sort them first.
+    private func addDroppedItems(_ urls: [URL]) -> Bool {
+        let before = store.configuration.items.count
+
+        for url in urls where url.pathExtension == "app" {
             store.addApplication(at: url)
         }
+        // `addFolders` rejects anything that is not a directory, so a file dropped alongside is
+        // discarded rather than becoming a broken entry.
+        store.addFolders(at: urls.filter { $0.pathExtension != "app" })
+
+        guard store.configuration.items.count > before else { return false }
         selection = store.configuration.items.last?.id
         return true
     }
@@ -207,12 +265,14 @@ private struct ItemRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Drawn at the configured size, in a slot wide enough for the largest one allowed,
-            // so a resized custom icon looks resized here too and the rows still line up.
+            // Drawn at this item's own size, in a slot wide enough for the largest one allowed,
+            // so a resized icon looks resized here too and the rows still line up.
             Image(nsImage: environment.icons.image(
                 for: item.icon,
                 app: item.referencedApps.first,
-                size: environment.store.configuration.preferences.iconSize
+                size: item.resolvedIconSize(
+                    default: environment.store.configuration.preferences.iconSize
+                )
             ))
             .frame(width: IconRenderer.maximumIconSize, height: IconRenderer.maximumIconSize)
 
@@ -221,22 +281,37 @@ private struct ItemRow: View {
 
             Spacer(minLength: 4)
 
-            if item.isGroup {
-                Text("\(item.referencedApps.count)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(.quaternary, in: Capsule())
-            } else if let app = item.referencedApps.first,
-                      environment.running.isRunning(app.bundleIdentifier) {
-                Circle()
-                    .fill(.secondary)
-                    .frame(width: 5, height: 5)
-                    .help("Running")
+            switch item.kind {
+            case .group:
+                countBadge(item.referencedApps.count)
+            case .folder(let entry):
+                if entry.folders.count == 1 {
+                    Image(systemName: "folder")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(entry.folders[0].displayPath)
+                } else {
+                    countBadge(entry.folders.count)
+                }
+            case .application(let entry):
+                if environment.running.isRunning(entry.app.bundleIdentifier) {
+                    Circle()
+                        .fill(.secondary)
+                        .frame(width: 5, height: 5)
+                        .help("Running")
+                }
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private func countBadge(_ count: Int) -> some View {
+        Text("\(count)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(.quaternary, in: Capsule())
     }
 }
 
@@ -285,6 +360,15 @@ struct GeneralSettingsView: View {
                     Text("Animation is off because Reduce Motion is enabled in System Settings › Accessibility › Display.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else if environment.animator.isThrottled {
+                    // Said out loud, because a halved frame rate that appears unannounced reads
+                    // as the app being janky rather than as the app being considerate.
+                    Label(
+                        "Running at half frame rate while Low Power Mode is on.",
+                        systemImage: "battery.25percent"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
 
                 LabeledContent("Icon size") {
@@ -325,7 +409,7 @@ struct GeneralSettingsView: View {
         // Icon size changes have to invalidate every cached render, since size is part of
         // the cache key but the status items are not otherwise told to redraw.
         .onChange(of: store.configuration.preferences.iconSize) { _, _ in
-            environment.icons.invalidateCache()
+            environment.icons.invalidateCache(includingAnimationFrames: true)
         }
     }
 }

@@ -115,6 +115,48 @@ enum AppLauncher {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    // MARK: - Folders
+
+    /// Opens a folder in Finder, the way double-clicking it would: Finder comes forward and
+    /// either brings the folder's existing window to the front or opens a new one.
+    ///
+    /// `NSWorkspace.open(_:)` rather than `activateFileViewerSelecting`, which is the *reveal*
+    /// gesture — it opens the enclosing folder with this one highlighted, so clicking "Documents"
+    /// would land the user in their home folder. That is a different feature, offered separately.
+    static func openFolder(_ reference: FolderReference) {
+        guard let url = reference.resolvedURL else {
+            presentMissingFolder(reference)
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Opens a folder in a brand-new Finder window, even if one is already showing it.
+    static func openFolderInNewWindow(_ reference: FolderReference) {
+        guard let url = reference.resolvedURL else {
+            presentMissingFolder(reference)
+            return
+        }
+        // Rooting the file viewer at the folder itself is the only API that reliably produces a
+        // *new* window rather than reusing whatever Finder already has open.
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
+    }
+
+    /// Opens the folder's parent with the folder selected — "Reveal in Finder" for folders.
+    static func revealFolder(_ reference: FolderReference) {
+        guard let url = reference.resolvedURL else {
+            presentMissingFolder(reference)
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    static func copyPath(_ reference: FolderReference) {
+        let path = reference.resolvedURL?.path ?? reference.lastKnownPath
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
     // MARK: - Errors
 
     /// The app was uninstalled or moved somewhere we cannot resolve. Because MenuDock has no
@@ -131,6 +173,31 @@ enum AppLauncher {
 
             Last known location:
             \(reference.lastKnownPath)
+            """
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Open MenuDock Settings…")
+
+        NSApp.activate()
+        if alert.runModal() == .alertSecondButtonReturn {
+            NotificationCenter.default.post(name: .menuDockShouldOpenSettings, object: nil)
+        }
+    }
+
+    /// The folder was renamed, moved somewhere the bookmark cannot follow, or lives on a volume
+    /// that is not mounted — which is the common case worth naming, since an unplugged external
+    /// drive is not a broken setup and should not read like one.
+    private static func presentMissingFolder(_ reference: FolderReference) {
+        log.error("Could not resolve folder at \(reference.lastKnownPath)")
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "“\(reference.name)” could not be found."
+        alert.informativeText = """
+            The folder may have been moved, renamed, or deleted — or it may be on a volume that \
+            is not currently mounted.
+
+            Last known location:
+            \(reference.displayPath)
             """
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Open MenuDock Settings…")

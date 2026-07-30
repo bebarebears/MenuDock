@@ -55,4 +55,15 @@ extension DockItem {
             kind = .group(newValue)
         }
     }
+
+    var folderEntry: FolderEntry? {
+        get {
+            if case .folder(let folder) = kind { return folder }
+            return nil
+        }
+        set {
+            guard let newValue else { return }
+            kind = .folder(newValue)
+        }
+    }
 }

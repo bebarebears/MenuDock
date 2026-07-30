@@ -1,11 +1,19 @@
 import SwiftUI
 
-/// Browsable grid of the 48 built-in icons.
+/// Browsable grid of the built-in icons.
 ///
 /// Animated icons **preview live in the grid**. A still frame of "Breathe" and a still frame of
 /// "Pulse" look nearly identical, so a static gallery would force the user to pick blind, apply,
 /// look at the menu bar, and come back. `TimelineView` drives the previews from the same phase
 /// function the status items use, so what animates here is exactly what animates up there.
+///
+/// ## One clock for the whole grid
+///
+/// Each animated cell used to own a `TimelineView` and render a fresh bitmap per tick. With a
+/// couple of dozen animated glyphs in the catalogue that is dozens of timers and hundreds of
+/// rasterisations a second — the settings window becoming more expensive than the menu bar it
+/// configures. Now a single timeline wraps the grid and every cell reads a cached frame, so
+/// opening this pane costs one timer and no drawing at all after the first loop.
 struct IconGalleryView: View {
     let environment: AppEnvironment
     @Binding var spec: IconSpec
@@ -86,22 +94,35 @@ struct IconGalleryView: View {
         }
     }
 
+    @ViewBuilder
     private func section(_ category: BuiltinIcon.Category, _ icons: [BuiltinIcon]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(category.rawValue.uppercased())
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.tertiary)
 
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
-                ForEach(icons) { icon in
-                    IconGalleryCell(
-                        icon: icon,
-                        isSelected: spec.builtinID == icon.id,
-                        isAnimating: environment.animator.isAnimating
-                    ) {
-                        spec = .builtin(id: icon.id)
-                        environment.icons.invalidateCache()
-                    }
+            // Only the animated section is driven by a clock, and only one clock drives it. The
+            // static sections are rebuilt on user input alone, as they should be.
+            if category == .animated, environment.animator.isAnimating {
+                TimelineView(.periodic(from: .now, by: 1.0 / 12.0)) { context in
+                    grid(icons, at: context.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                grid(icons, at: nil)
+            }
+        }
+    }
+
+    private func grid(_ icons: [BuiltinIcon], at time: TimeInterval?) -> some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+            ForEach(icons) { icon in
+                IconGalleryCell(
+                    icon: icon,
+                    isSelected: spec.builtinID == icon.id,
+                    time: time
+                ) {
+                    spec = .builtin(id: icon.id)
+                    environment.icons.invalidateCache()
                 }
             }
         }
@@ -112,7 +133,8 @@ struct IconGalleryView: View {
 private struct IconGalleryCell: View {
     let icon: BuiltinIcon
     let isSelected: Bool
-    let isAnimating: Bool
+    /// Clock reading to animate from, or `nil` to draw the rest frame.
+    let time: TimeInterval?
     let select: () -> Void
 
     var body: some View {
@@ -121,14 +143,8 @@ private struct IconGalleryCell: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.09))
 
-                if icon.isAnimated && isAnimating {
-                    // Redraws only while this gallery is on screen, and only for animated cells.
-                    TimelineView(.periodic(from: .now, by: 1.0 / 15.0)) { context in
-                        glyph(phase: BuiltinIconCatalog.phase(
-                            for: icon,
-                            at: context.date.timeIntervalSinceReferenceDate
-                        ))
-                    }
+                if icon.isAnimated, let time {
+                    glyph(phase: BuiltinIconCatalog.phase(for: icon, at: time))
                 } else {
                     glyph(phase: 0)
                 }
@@ -153,8 +169,12 @@ private struct IconGalleryCell: View {
     }
 
     private func glyph(phase: Double) -> some View {
-        Image(nsImage: BuiltinIconCatalog.image(icon: icon, size: 20, phase: phase))
-            .renderingMode(.template)
-            .foregroundStyle(isSelected ? Color.white : Color.primary)
+        Image(nsImage: BuiltinIconCatalog.frame(
+            icon: icon,
+            size: 20,
+            index: BuiltinIconCatalog.frameIndex(for: phase)
+        ))
+        .renderingMode(.template)
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
     }
 }

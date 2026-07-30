@@ -21,8 +21,26 @@ enum IconSourceKind: String, CaseIterable, Identifiable {
 struct IconEditor: View {
     let environment: AppEnvironment
     @Binding var spec: IconSpec
-    /// `nil` for groups, which have no single application to borrow an icon from.
+    /// This item's size override, or `nil` while it follows the global preference.
+    @Binding var size: Double?
+    /// `nil` for groups and folders, which have no single application to borrow an icon from.
     let app: AppReference?
+    /// Which built-in glyph to fall back to when the user switches to the built-in source.
+    let defaultBuiltinID: String
+
+    init(
+        environment: AppEnvironment,
+        spec: Binding<IconSpec>,
+        size: Binding<Double?>,
+        app: AppReference?,
+        defaultBuiltinID: String = "globe"
+    ) {
+        self.environment = environment
+        self._spec = spec
+        self._size = size
+        self.app = app
+        self.defaultBuiltinID = defaultBuiltinID
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -43,6 +61,12 @@ struct IconEditor: View {
             case .appIcon:
                 EmptyView()
             }
+
+            // Size applies to every source, not just custom artwork: a built-in glyph or an
+            // app's own icon is just as likely to want to sit a point or two larger than its
+            // neighbours, and the whole appeal of a per-item knob is that it works everywhere.
+            Divider().padding(.vertical, 2)
+            sizeControls
         }
     }
 
@@ -63,6 +87,11 @@ struct IconEditor: View {
         app == nil ? [.builtin, .custom] : IconSourceKind.allCases
     }
 
+    /// Groups and folders lose the "App Icon" segment, so their picker is narrower.
+    private var sourcePickerWidth: Double {
+        app == nil ? 190 : 260
+    }
+
     private var sourcePicker: some View {
         // `set: { apply($0) }` rather than `set: apply`: passing the method reference directly
         // makes the compiler synthesise a reabstraction thunk carrying the binding's implicit
@@ -73,7 +102,7 @@ struct IconEditor: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: app == nil ? 190 : 260)
+        .frame(width: sourcePickerWidth)
     }
 
     /// Switching source picks a sensible default rather than clearing the icon, so the preview
@@ -84,7 +113,7 @@ struct IconEditor: View {
         case .appIcon:
             spec = .appIcon
         case .builtin:
-            spec = .builtin(id: app == nil ? "folder" : "globe")
+            spec = .builtin(id: defaultBuiltinID)
         case .custom:
             // Nothing to select yet — the well becomes the call to action.
             spec = .custom(fileName: "", rendering: .auto, pointSize: nil)
@@ -100,7 +129,7 @@ struct IconEditor: View {
                 Button("Choose Image…", action: chooseImage)
                 if spec.customFileName?.isEmpty == false {
                     Button("Remove") {
-                        spec = app == nil ? .builtin(id: "folder") : .appIcon
+                        spec = app == nil ? .builtin(id: defaultBuiltinID) : .appIcon
                         environment.icons.invalidateCache()
                     }
                 }
@@ -109,10 +138,10 @@ struct IconEditor: View {
                     .foregroundStyle(.secondary)
             }
 
-            if case .custom(let fileName, let rendering, let pointSize) = spec, !fileName.isEmpty {
+            if case .custom(let fileName, let rendering, _) = spec, !fileName.isEmpty {
                 Picker("Appearance", selection: Binding(
                     get: { rendering },
-                    set: { spec = .custom(fileName: fileName, rendering: $0, pointSize: pointSize)
+                    set: { spec = .custom(fileName: fileName, rendering: $0, pointSize: nil)
                            environment.icons.invalidateCache() }
                 )) {
                     ForEach(IconSpec.RenderingMode.allCases, id: \.self) { mode in
@@ -121,31 +150,24 @@ struct IconEditor: View {
                 }
                 .pickerStyle(.radioGroup)
                 .padding(.leading, 2)
-
-                Divider().padding(.vertical, 2)
-                sizeControls(fileName: fileName, rendering: rendering, pointSize: pointSize)
             }
         }
     }
 
-    // MARK: - Per-icon size
+    // MARK: - Per-item size
 
     private var defaultSize: Double {
         environment.store.configuration.preferences.iconSize
     }
 
-    /// A size slider for this artwork alone, plus a preview at the size it actually claims.
+    /// A size slider for this item alone, plus a preview at the size it actually claims.
     ///
     /// The preview is not decoration. A size control with no true-size readout is unusable —
     /// judging 16pt against 19pt from an 88pt well is impossible, so without it the only way
     /// to evaluate a change is to look up at the menu bar and back down again. Two real system
     /// items sit alongside for scale.
-    private func sizeControls(
-        fileName: String,
-        rendering: IconSpec.RenderingMode,
-        pointSize: Double?
-    ) -> some View {
-        let effective = pointSize ?? defaultSize
+    private var sizeControls: some View {
+        let effective = size ?? defaultSize
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
@@ -154,10 +176,8 @@ struct IconEditor: View {
                     value: Binding(
                         get: { effective },
                         set: {
-                            spec = .custom(fileName: fileName,
-                                           rendering: rendering,
-                                           pointSize: $0.rounded())
-                            environment.icons.invalidateCache()
+                            size = $0.rounded()
+                            environment.icons.invalidateCache(includingAnimationFrames: true)
                         }
                     ),
                     in: IconRenderer.minimumIconSize...IconRenderer.maximumIconSize,
@@ -165,32 +185,32 @@ struct IconEditor: View {
                 )
                 .frame(width: 170)
 
-                Text(pointSize == nil ? "\(Int(effective)) pt (default)" : "\(Int(effective)) pt")
+                Text(size == nil ? "\(Int(effective)) pt (default)" : "\(Int(effective)) pt")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 96, alignment: .leading)
 
-                if pointSize != nil {
+                if size != nil {
                     Button("Use Default") {
-                        spec = .custom(fileName: fileName, rendering: rendering, pointSize: nil)
-                        environment.icons.invalidateCache()
+                        size = nil
+                        environment.icons.invalidateCache(includingAnimationFrames: true)
                     }
                     .controlSize(.small)
                 }
             }
 
-            actualSizePreview
+            actualSizePreview(effective)
         }
     }
 
-    private var actualSizePreview: some View {
+    private func actualSizePreview(_ effective: Double) -> some View {
         HStack(spacing: 4) {
             Text("Actual size")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.trailing, 4)
 
-            Image(nsImage: environment.icons.image(for: spec, app: app, size: defaultSize))
+            Image(nsImage: environment.icons.image(for: spec, app: app, size: effective))
             ForEach(["wifi", "battery.75percent"], id: \.self) { name in
                 Image(systemName: name)
                     .font(.system(size: defaultSize * 0.72))
@@ -254,22 +274,26 @@ struct IconWell: View {
     private var preview: some View {
         if let icon = environment.icons.builtinIcon(for: spec),
            icon.isAnimated, environment.animator.isAnimating {
-            TimelineView(.periodic(from: .now, by: 1.0 / 15.0)) { context in
-                Image(nsImage: BuiltinIconCatalog.image(
+            TimelineView(.periodic(from: .now, by: 1.0 / 12.0)) { context in
+                // Frames come from the shared cache, so this well costs a lookup per tick
+                // rather than rasterising a fresh 48pt bitmap twelve times a second.
+                Image(nsImage: BuiltinIconCatalog.frame(
                     icon: icon,
                     size: 48,
-                    phase: BuiltinIconCatalog.phase(
-                        for: icon,
-                        at: context.date.timeIntervalSinceReferenceDate
+                    index: BuiltinIconCatalog.frameIndex(
+                        for: BuiltinIconCatalog.phase(
+                            for: icon,
+                            at: context.date.timeIntervalSinceReferenceDate
+                        )
                     )
                 ))
                 .renderingMode(.template)
                 .foregroundStyle(.primary)
             }
         } else {
-            // `ignoringPointSize`: this well shows *what* the artwork is, at a size it picks
-            // itself. How big it will be in the menu bar is the job of the actual-size strip.
-            Image(nsImage: environment.icons.image(for: spec.ignoringPointSize, app: app, size: 48))
+            // Always 48pt: this well shows *what* the artwork is, at a size it picks itself.
+            // How big it will be in the menu bar is the job of the actual-size strip.
+            Image(nsImage: environment.icons.image(for: spec, app: app, size: 48))
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 48, height: 48)

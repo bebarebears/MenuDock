@@ -175,12 +175,25 @@ enum IconRenderer {
         return NSSize(width: source.width * scale, height: source.height * scale)
     }
 
-    /// Renders `draw` into 1× and 2× bitmaps and packs both into one `NSImage`, so the status
-    /// item picks the right one per display without AppKit having to interpolate.
-    private static func compose(size: NSSize, scales: [CGFloat] = [1, 2], draw: () -> Void) -> NSImage {
+    /// The backing scale factors worth rendering for, so a Retina-only Mac — which is every Mac
+    /// sold in a decade — never pays to rasterise a 1× representation nothing will display.
+    ///
+    /// Halving the work matters because animated icons render a full loop of frames on first
+    /// play. Plugging in a 1× display later is handled by invalidating the caches on
+    /// `NSApplication.didChangeScreenParametersNotification`; until that fires, AppKit
+    /// downscaling a 2× rep is a non-event.
+    static var renderScales: [CGFloat] {
+        let scales = Set(NSScreen.screens.map(\.backingScaleFactor)).filter { $0 > 0 }
+        return scales.isEmpty ? [2] : scales.sorted()
+    }
+
+    /// Renders `draw` into one bitmap per backing scale in use and packs them into one
+    /// `NSImage`, so the status item picks the right one per display without AppKit having to
+    /// interpolate.
+    private static func compose(size: NSSize, draw: () -> Void) -> NSImage {
         let image = NSImage(size: size)
 
-        for scale in scales {
+        for scale in renderScales {
             guard let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil,
                 pixelsWide: Int(size.width * scale),

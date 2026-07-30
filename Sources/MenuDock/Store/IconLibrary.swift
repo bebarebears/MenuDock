@@ -30,9 +30,16 @@ final class IconLibrary {
         let size: Double
         let running: Bool
         let showsIndicator: Bool
-        /// Quantised animation frame. Always 0 for static icons, so they occupy one entry.
-        let frame: Int
     }
+
+    /// Ceiling on cached renders before the whole cache is dropped.
+    ///
+    /// A menu bar holds a dozen items and a handful of sizes, so this is never reached in normal
+    /// use — it exists because the cache is keyed on user-controlled values (every size a slider
+    /// passes through, every icon ever previewed) and an unbounded dictionary of bitmaps in a
+    /// process that runs for weeks is a leak with extra steps. Animation frames are not in here
+    /// at all; they live in ``BuiltinIconCatalog``'s per-icon strips.
+    private static let cacheLimit = 256
 
     static var iconsDirectory: URL {
         ConfigurationStore.supportDirectory.appending(path: "Icons", directoryHint: .isDirectory)
@@ -147,7 +154,10 @@ final class IconLibrary {
     /// - Parameters:
     ///   - app: the app whose bundle icon to use for `.appIcon`, and whose running state
     ///     drives the indicator dot.
-    ///   - size: the size to draw at, unless the spec carries its own override.
+    ///   - size: the exact size to draw at. Taken verbatim — per-item overrides and menu bar
+    ///     clamping are resolved by the caller (see ``DockItem/resolvedIconSize(default:)``),
+    ///     because the surfaces that are *not* the menu bar legitimately want other sizes: a
+    ///     48pt preview well must render at 48pt, not at the menu bar's 22pt ceiling.
     ///   - running: whether to draw the running indicator.
     ///   - phase: animation position, 0…1. Ignored for static icons.
     func image(
@@ -158,39 +168,34 @@ final class IconLibrary {
         showsIndicator: Bool = false,
         phase: Double = 0
     ) -> NSImage {
-        // Custom artwork may override the global size. Resolved here rather than at each call
-        // site so every surface — menu bar, settings list, previews — agrees on one answer.
-        let size = min(max(spec.customPointSize ?? size, IconRenderer.minimumIconSize),
-                       IconRenderer.maximumIconSize)
+        // Animated built-ins bypass this cache entirely: their frames are cached by index in
+        // ``BuiltinIconCatalog``, which is both cheaper to look up and shared with the settings
+        // previews. Keying 36 frames per icon into a dictionary of hashed `IconSpec`s — as this
+        // used to — put string hashing on the hot path of a timer that fires all day.
+        if case .builtin(let id) = spec, let icon = BuiltinIconCatalog.icon(id: id) {
+            return BuiltinIconCatalog.frame(
+                icon: icon,
+                size: size,
+                showsRunningDot: showsIndicator && running,
+                index: icon.isAnimated ? BuiltinIconCatalog.frameIndex(for: phase) : 0
+            )
+        }
 
-        let frame = Int((phase * Double(BuiltinIconCatalog.frameCount)).rounded())
         let key = CacheKey(spec: spec,
                            bundleIdentifier: app?.bundleIdentifier,
                            size: size,
                            running: running,
-                           showsIndicator: showsIndicator,
-                           frame: frame)
+                           showsIndicator: showsIndicator)
         if let cached = renderCache[key] { return cached }
 
-        let rendered: NSImage
-        if case .builtin(let id) = spec, let icon = BuiltinIconCatalog.icon(id: id) {
-            // Built-ins skip the NSImage pipeline entirely — they are drawn straight into the
-            // final rect, so no resampling ever touches them.
-            rendered = IconRenderer.menuBarImage(
-                builtin: icon,
-                size: size,
-                showsRunningDot: showsIndicator && running,
-                phase: phase
-            )
-        } else {
-            rendered = IconRenderer.menuBarImage(
-                from: sourceImage(for: spec, app: app),
-                spec: spec,
-                size: size,
-                showsRunningDot: showsIndicator && running
-            )
-        }
+        let rendered = IconRenderer.menuBarImage(
+            from: sourceImage(for: spec, app: app),
+            spec: spec,
+            size: size,
+            showsRunningDot: showsIndicator && running
+        )
 
+        if renderCache.count >= Self.cacheLimit { renderCache.removeAll(keepingCapacity: true) }
         renderCache[key] = rendered
         return rendered
     }
@@ -222,9 +227,18 @@ final class IconLibrary {
         }
     }
 
-    /// Drops every cached render. Called when the system appearance changes, when the
-    /// configuration changes, or when preferences alter icon size.
-    func invalidateCache() {
+    /// Drops cached renders. Called when the system appearance changes, when the configuration
+    /// changes, or when preferences alter icon size.
+    ///
+    /// Built-in animation frames survive by default, and should: they are template images, so
+    /// they already track Light/Dark mode without being redrawn, and re-rendering a whole loop
+    /// because the user clicked a different glyph in the gallery is pure waste. Pass
+    /// `includingAnimationFrames` for the two things that genuinely invalidate them — a change
+    /// of size, or a change of display backing scale.
+    func invalidateCache(includingAnimationFrames: Bool = false) {
         renderCache.removeAll(keepingCapacity: true)
+        if includingAnimationFrames {
+            BuiltinIconCatalog.invalidateFrames()
+        }
     }
 }

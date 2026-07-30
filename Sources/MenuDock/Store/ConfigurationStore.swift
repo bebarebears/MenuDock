@@ -122,6 +122,14 @@ final class ConfigurationStore {
         update { $0.items.append(DockItem(kind: .group(GroupEntry(name: name)))) }
     }
 
+    /// Adds one menu bar item per folder, so selecting four folders in the open panel gives four
+    /// one-click icons rather than one icon that asks which folder you meant.
+    func addFolders(at urls: [URL]) {
+        let references = urls.compactMap(FolderReference.init(folderURL:))
+        guard !references.isEmpty else { return }
+        update { $0.items.append(contentsOf: references.map(DockItem.init(folder:))) }
+    }
+
     func remove(id: DockItem.ID) {
         update { $0.items.removeAll { $0.id == id } }
     }

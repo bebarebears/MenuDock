@@ -36,16 +36,16 @@ nonisolated struct AppEntry: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
-/// A folder of apps that expands from a single menu bar icon.
+/// A group of apps that expands from a single menu bar icon.
 nonisolated struct GroupEntry: Codable, Hashable, Sendable {
     var name: String = "Group"
-    var icon: IconSpec = .builtin(id: "folder")
+    var icon: IconSpec = .builtin(id: "grid")
     var members: [AppEntry] = []
 
     private enum CodingKeys: String, CodingKey { case name, icon, members }
 
     init(name: String = "Group",
-         icon: IconSpec = .builtin(id: "folder"),
+         icon: IconSpec = .builtin(id: "grid"),
          members: [AppEntry] = []) {
         self.name = name
         self.icon = icon
@@ -55,8 +55,51 @@ nonisolated struct GroupEntry: Codable, Hashable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Group"
-        icon = try container.decodeIfPresent(IconSpec.self, forKey: .icon) ?? .builtin(id: "folder")
+        icon = try container.decodeIfPresent(IconSpec.self, forKey: .icon) ?? .builtin(id: "grid")
         members = try container.decodeIfPresent([AppEntry].self, forKey: .members) ?? []
+    }
+}
+
+/// One or more folders that open in Finder from a single menu bar icon.
+///
+/// Holding a *list* rather than a single folder is what lets one icon stand for a whole working
+/// context — "Current Project", say, pointing at the repo, its designs, and its notes. With one
+/// folder configured a click opens it immediately; with several the icon offers them, unless
+/// ``opensAllAtOnce`` says the user would rather have every window at once.
+nonisolated struct FolderEntry: Codable, Hashable, Sendable {
+    var name: String = "Folders"
+    var icon: IconSpec = .builtin(id: "folder")
+    var folders: [FolderReference] = []
+    /// Left-click opens every folder instead of offering a list. Only meaningful with 2+ folders.
+    var opensAllAtOnce: Bool = false
+
+    private enum CodingKeys: String, CodingKey { case name, icon, folders, opensAllAtOnce }
+
+    init(name: String = "Folders",
+         icon: IconSpec = .builtin(id: "folder"),
+         folders: [FolderReference] = [],
+         opensAllAtOnce: Bool = false) {
+        self.name = name
+        self.icon = icon
+        self.folders = folders
+        self.opensAllAtOnce = opensAllAtOnce
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Folders"
+        icon = try container.decodeIfPresent(IconSpec.self, forKey: .icon) ?? .builtin(id: "folder")
+        folders = try container.decodeIfPresent([FolderReference].self, forKey: .folders) ?? []
+        opensAllAtOnce = try container.decodeIfPresent(Bool.self, forKey: .opensAllAtOnce) ?? false
+    }
+
+    /// Title for a folder item the user has not named, so a single-folder item reads as the
+    /// folder itself rather than a generic "Folders".
+    var effectiveTitle: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed != "Folders" { return trimmed }
+        if folders.count == 1 { return folders[0].name }
+        return "Folders"
     }
 }
 
@@ -69,20 +112,34 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
     var id: UUID = UUID()
     var kind: Kind
 
+    /// Icon edge length in points for this item alone, or `nil` to follow the global preference.
+    ///
+    /// Lives on the item rather than on the icon spec because it describes *this slot in the
+    /// menu bar*, not the artwork: a user who nudges their Finder icon up to 20pt expects it to
+    /// stay 20pt after they swap the glyph for a different one. Keeping it here also means one
+    /// size knob for every icon source instead of one that only appears for custom images.
+    var iconSize: Double?
+
     enum Kind: Hashable, Sendable {
         case application(AppEntry)
         case group(GroupEntry)
+        case folder(FolderEntry)
     }
 
-    private enum CodingKeys: String, CodingKey { case id, kind }
+    private enum CodingKeys: String, CodingKey { case id, kind, iconSize }
 
-    init(id: UUID = UUID(), kind: Kind) {
+    init(id: UUID = UUID(), kind: Kind, iconSize: Double? = nil) {
         self.id = id
         self.kind = kind
+        self.iconSize = iconSize
     }
 
     init(app: AppReference) {
         self.init(kind: .application(AppEntry(app: app)))
+    }
+
+    init(folder: FolderReference) {
+        self.init(kind: .folder(FolderEntry(name: folder.name, folders: [folder])))
     }
 
     init(from decoder: Decoder) throws {
@@ -91,6 +148,44 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
         // this array's order. A missing `kind` is not: there would be nothing to show.
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         kind = try container.decode(Kind.self, forKey: .kind)
+        iconSize = try container.decodeIfPresent(Double.self, forKey: .iconSize)
+
+        // Migration: the size override used to live inside `IconSpec.custom`, where it applied
+        // to one image rather than to the item. Lift it here and strip it from the spec, so
+        // there is exactly one source of truth and a user's chosen size survives the upgrade.
+        if iconSize == nil, let legacy = kind.icon.customPointSize {
+            iconSize = legacy
+        }
+        if kind.icon.customPointSize != nil {
+            kind.icon = kind.icon.ignoringPointSize
+        }
+    }
+}
+
+nonisolated extension DockItem.Kind {
+    /// Read/write access to whichever entry's icon this kind wraps, so callers never have to
+    /// unwrap the enum just to change a glyph.
+    var icon: IconSpec {
+        get {
+            switch self {
+            case .application(let entry): entry.icon
+            case .group(let group): group.icon
+            case .folder(let folder): folder.icon
+            }
+        }
+        set {
+            switch self {
+            case .application(var entry):
+                entry.icon = newValue
+                self = .application(entry)
+            case .group(var group):
+                group.icon = newValue
+                self = .group(group)
+            case .folder(var folder):
+                folder.icon = newValue
+                self = .folder(folder)
+            }
+        }
     }
 }
 
@@ -99,33 +194,21 @@ nonisolated extension DockItem {
         switch kind {
         case .application(let entry): entry.displayTitle
         case .group(let group): group.name
+        case .folder(let folder): folder.effectiveTitle
         }
     }
 
     var icon: IconSpec {
-        get {
-            switch kind {
-            case .application(let entry): entry.icon
-            case .group(let group): group.icon
-            }
-        }
-        set {
-            switch kind {
-            case .application(var entry):
-                entry.icon = newValue
-                kind = .application(entry)
-            case .group(var group):
-                group.icon = newValue
-                kind = .group(group)
-            }
-        }
+        get { kind.icon }
+        set { kind.icon = newValue }
     }
 
-    /// Every app this item can launch — one for an app item, N for a group.
+    /// Every app this item can launch — one for an app item, N for a group, none for folders.
     var referencedApps: [AppReference] {
         switch kind {
         case .application(let entry): [entry.app]
         case .group(let group): group.members.map(\.app)
+        case .folder: []
         }
     }
 
@@ -136,6 +219,8 @@ nonisolated extension DockItem {
             [entry.icon.customFileName].compactMap { $0 }
         case .group(let group):
             ([group.icon.customFileName] + group.members.map(\.icon.customFileName)).compactMap { $0 }
+        case .folder(let folder):
+            [folder.icon.customFileName].compactMap { $0 }
         }
     }
 
@@ -143,13 +228,28 @@ nonisolated extension DockItem {
         if case .group = kind { return true }
         return false
     }
+
+    var isFolder: Bool {
+        if case .folder = kind { return true }
+        return false
+    }
+
+    /// The size this item's icon should be drawn at, honouring its own override and clamped to
+    /// what the menu bar can actually show.
+    ///
+    /// `@MainActor` only because the upper bound is read from the live `NSStatusBar`; everything
+    /// else about `DockItem` is plain data.
+    @MainActor
+    func resolvedIconSize(default globalSize: Double) -> Double {
+        min(max(iconSize ?? globalSize, IconRenderer.minimumIconSize), IconRenderer.maximumIconSize)
+    }
 }
 
 // MARK: - Codable
 
 nonisolated extension DockItem.Kind: Codable {
-    private enum CodingKeys: String, CodingKey { case type, entry, group }
-    private enum Discriminator: String, Codable { case application, group }
+    private enum CodingKeys: String, CodingKey { case type, entry, group, folder }
+    private enum Discriminator: String, Codable { case application, group, folder }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -158,6 +258,8 @@ nonisolated extension DockItem.Kind: Codable {
             self = .application(try container.decode(AppEntry.self, forKey: .entry))
         case .group:
             self = .group(try container.decode(GroupEntry.self, forKey: .group))
+        case .folder:
+            self = .folder(try container.decode(FolderEntry.self, forKey: .folder))
         }
     }
 
@@ -170,6 +272,9 @@ nonisolated extension DockItem.Kind: Codable {
         case .group(let group):
             try container.encode(Discriminator.group, forKey: .type)
             try container.encode(group, forKey: .group)
+        case .folder(let folder):
+            try container.encode(Discriminator.folder, forKey: .type)
+            try container.encode(folder, forKey: .folder)
         }
     }
 }

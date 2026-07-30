@@ -36,6 +36,7 @@ final class StatusItemCoordinator {
     /// Left-to-right order of what is actually on the menu bar right now.
     private var liveOrder: [DockItem.ID] = []
     private var appearanceObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
 
     init(
         store: ConfigurationStore,
@@ -51,6 +52,7 @@ final class StatusItemCoordinator {
         self.openSettings = openSettings
 
         observeAppearanceChanges()
+        observeScreenChanges()
         reconcile()
         observe()
     }
@@ -58,6 +60,9 @@ final class StatusItemCoordinator {
     isolated deinit {
         if let appearanceObserver {
             DistributedNotificationCenter.default().removeObserver(appearanceObserver)
+        }
+        if let screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
         }
     }
 
@@ -92,6 +97,19 @@ final class StatusItemCoordinator {
                 self.icons.invalidateCache()
                 self.controllers.values.forEach { $0.refresh() }
             }
+        }
+    }
+
+    /// Renders are baked for the backing scale of the displays present when they were made, and
+    /// the icon size ceiling comes from the live menu bar's thickness — both of which change when
+    /// a display is connected, disconnected, or its resolution changes.
+    private func observeScreenChanges() {
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.invalidateAndRefresh() }
         }
     }
 
@@ -174,9 +192,10 @@ final class StatusItemCoordinator {
         liveOrder != desiredOrder
     }
 
-    /// Drops render caches and redraws everything. Used after preferences change icon size.
+    /// Drops every render cache — animation frames included — and redraws. Used when icon size
+    /// or the display setup changes, both of which invalidate the pixels themselves.
     func invalidateAndRefresh() {
-        icons.invalidateCache()
+        icons.invalidateCache(includingAnimationFrames: true)
         controllers.values.forEach { $0.refresh() }
     }
 

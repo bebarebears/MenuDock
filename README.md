@@ -1,8 +1,9 @@
 # MenuDock
 
 A minimalist, highly customisable replacement for the macOS Dock that lives entirely in the
-menu bar. Add any installed app, give it any icon, group apps into dropdown folders, and
-launch or activate them with one click — exactly like a Dock tile.
+menu bar. Add any installed app, point an icon at a folder to open it in Finder, give anything any
+icon at any size, group apps into dropdown menus, and launch or activate them with one click —
+exactly like a Dock tile.
 
 Swift 6 · SwiftUI (settings) · AppKit (menu bar) · macOS 14+
 
@@ -30,8 +31,9 @@ Sources/MenuDock/
 │   └── LoginItem.swift            SMAppService launch-at-login
 ├── Model/                         pure data — all `nonisolated`, all Codable + Sendable
 │   ├── AppReference.swift         relocation-tolerant pointer to an installed app
-│   ├── IconSpec.swift             appIcon | symbol | custom(file, renderingMode)
-│   ├── DockItem.swift             one status item: .application or .group
+│   ├── FolderReference.swift      relocation-tolerant pointer to a folder
+│   ├── IconSpec.swift             appIcon | symbol | builtin | custom(file, renderingMode)
+│   ├── DockItem.swift             one status item: .application, .group or .folder (+ size)
 │   └── Configuration.swift        the on-disk document + schemaVersion
 ├── Store/
 │   ├── ConfigurationStore.swift   @Observable source of truth, debounced atomic writes
@@ -45,23 +47,25 @@ Sources/MenuDock/
 │   ├── IconRenderer.swift         fit + template + running-dot compositing
 │   └── Builtin/
 │       ├── Pen.swift              drawing primitives on a 24x24 y-down grid
-│       ├── BuiltinIcon.swift      catalogue entry + phase/frame maths
-│       ├── StaticIcons.swift      36 category glyphs
-│       ├── AnimatedIcons.swift    12 gently animated glyphs
+│       ├── BuiltinIcon.swift      catalogue entry + phase/frame maths + frame cache
+│       ├── StaticIcons.swift      78 category glyphs
+│       ├── AnimatedIcons.swift    28 gently animated glyphs
 │       └── IconAnimator.swift     one shared timer for every animated item
 ├── MenuBar/
 │   ├── StatusItemCoordinator.swift  reconciles model <-> live NSStatusItems
 │   ├── StatusItemController.swift   owns one NSStatusItem, routes clicks
+│   ├── GlyphLayer.swift             animates without redrawing the status item
 │   ├── MenuBuilder.swift            builds NSMenus from live state
 │   └── MenuAction.swift             closure-backed menu items
 └── Settings/                      SwiftUI, hosted in a plain NSWindow
+    └── AddItemPopup.swift         the + menu, drawn inside the window
 
 Tools/GenerateAppIcon/           draws Resources/AppIcon.icns (`make icon`)
 ```
 
 ---
 
-## The six decisions that shape everything
+## The seven decisions that shape everything
 
 ### 1. One `NSStatusItem` per entry, reconciled by identity — and the list is the order
 
@@ -159,13 +163,22 @@ The heuristic has one honest failure mode: a *greyscale photograph* is colourles
 silhouette, and templating flattens it. Hence `RenderingMode` — Automatic / Monochrome / Original
 — with the settings pane stating in words what Automatic decided.
 
-**Size is per-icon, but only for custom artwork.** `iconSize` in General sets the size for
-everything; a `.custom` spec may carry its own `pointSize` that overrides it. The asymmetry is the
-point. Built-in glyphs are drawn on one grid with one stroke weight and an app's own icon is a
-square bitmap Apple already balanced, so both are consistent at the global size. A user's logo
-might be a wide wordmark or a tight square with no padding, and no single number flatters both.
+**Size is per item, for every kind of icon.** `iconSize` in General sets the default; any item may
+carry its own `iconSize` that overrides it, whatever its icon source is.
+
+The override lives on the **item**, not on the icon spec — where it used to live, as a `pointSize`
+inside `.custom`. Two reasons. It describes this slot in the menu bar rather than the artwork, so
+nudging Finder up to 20pt should survive swapping the glyph underneath it; and a size knob that
+only appears for custom images is a knob users cannot find. Configurations written by the old
+version are migrated on decode: `DockItem.init(from:)` lifts a legacy `pointSize` onto the item and
+strips it from the spec, so there is exactly one source of truth afterwards and nobody's chosen
+size is lost in the upgrade.
+
 The ceiling comes from `NSStatusBar.thickness` rather than a constant, so no slider can offer a
-size that would be clamped away before it reached the screen.
+size that would be clamped away before it reached the screen. Clamping happens in
+`DockItem.resolvedIconSize(default:)` and *not* inside `IconLibrary`, which takes the size it is
+given — the settings pane's 48pt preview well is a legitimate caller, and clamping it to the menu
+bar's 22pt ceiling was quietly upscaling a small render into a large well.
 
 The settings pane shows the icon at its true size on a menu-bar-coloured strip beside two real
 system items. A size control without a true-size readout is unusable — 16pt and 19pt are
@@ -181,21 +194,56 @@ Only the running-dot path rasterises, and it emits explicit 1× and 2× bitmaps.
 
 ### 6. Built-in icons are drawn, not shipped
 
-48 icons — 36 static category glyphs and 12 animated — defined as code on a 24 × 24 y-down grid
+106 icons — 78 static category glyphs and 28 animated — defined as code on a 24 × 24 y-down grid
 with a shared 1.9-unit stroke system. Drawing them procedurally means they are pixel-exact at any
 menu bar height, weigh a few hundred bytes each, and — for the animated ones — can be evaluated at
 an arbitrary phase rather than baked into a filmstrip. All are monochrome by construction, so
 `isTemplate` is unconditional and they tint with Light/Dark mode for free.
+
+A whole category is "Files & Folders", added for folder items and leaning towards *places* rather
+than more folders: a second folder-shaped glyph says nothing about which folder it points at.
+
+Drawing a glyph blind and shipping it is how you get a flame that reads as a water droplet — which
+is exactly what the first attempt was. Every glyph here was rendered to a contact sheet and looked
+at, at both 46pt and 18pt, and several were rebuilt on the evidence: a solid cloud that overpowered
+every outlined neighbour, a bell whose two same-height control points gave it the flat top of a
+cloche, and a USB stick that turned out to be the battery silhouette with the nub on the other side.
 
 They are **category glyphs, not brand logos**: one "Browser" icon serves Safari, Chrome, Arc and
 Firefox. Redrawing third-party marks would be a trademark problem to ship, logos age badly as
 companies rebrand, and a coherent single-weight set reads far better in a menu bar than a row of
 mismatched logos. Users who want a specific brand mark can still drop in their own SVG.
 
-Animation is deliberately restrained — 2.4–4.5s periods, eased rather than linear, small
+Animation is deliberately restrained — 2.2–4.5s periods, eased rather than linear, small
 amplitude or pure opacity. A menu bar sits in motion-sensitive peripheral vision all day, so
-anything sharp there reads as an alert. Motion is suppressed entirely under **Reduce Motion**,
-and pauses when the screens sleep.
+anything sharp there reads as an alert. Motion is suppressed entirely under **Reduce Motion**, and
+pauses when the screens sleep, when the screen locks, when the session is switched away, and when
+every animated icon is occluded — which is what happens the moment a fullscreen app hides the menu
+bar. Low Power Mode halves the frame rate and says so in Settings.
+
+Four glyphs also **react to a click** — the dog, the cat, the ghost, the bell. They receive a phase
+in the 1…2 range for the duration of a one-shot reaction and return to their idle loop afterwards;
+`StatusItemController` drives that range directly from wall-clock time.
+
+---
+
+### 7. Folders are items, not a special case
+
+A folder item is a third `DockItem.Kind` beside `.application` and `.group`, holding one or more
+`FolderReference`s. One folder: a click opens it in Finder, no menu, same as an app item launching.
+Several: the click lists them, unless "Open every folder on click" is on. `NSWorkspace.open(_:)`
+rather than `activateFileViewerSelecting(_:)` — the latter is the *reveal* gesture, which would open
+the folder's parent with it highlighted, so clicking "Documents" would land you in your home folder.
+
+Folders resolve through two tiers, not the three an app gets: there is no bundle identifier for a
+folder, so it is last-known-path (a single `stat`, correct almost always) then bookmark data (which
+survives the rename or move a path cannot). A folder on an unmounted volume gets an alert that names
+that possibility, because an unplugged drive is not a broken setup and should not read like one.
+
+The rows in a folder's left-click menu carry **no submenu**, and that is load-bearing: AppKit never
+sends a menu item's action when the item has a submenu — it opens the submenu instead — so attaching
+per-folder extras there would have silently made every row do nothing. Those extras live in the
+right-click menu, where a row is a heading rather than the one action the menu exists for.
 
 ## Installing, and the app icon
 
@@ -227,20 +275,58 @@ bundle identifiers currently on the menu bar. State reaches the menu bar through
 and `withObservationTracking`, so one change triggers exactly one reconcile.
 
 `IconLibrary` caches rendered images keyed on everything that affects output (spec, app, size,
-running state, indicator setting, animation frame), so a no-op refresh is a dictionary lookup and
-each animation frame is drawn at most once ever.
+running state, indicator setting), so a no-op refresh is a dictionary lookup. Animated built-ins
+have their own cache — a per-icon strip of frames indexed by frame number, in `BuiltinIconCatalog`
+— so a loop is rasterised at most once ever and shared by the menu bar, the icon gallery and the
+preview well. Steady-state animation does no drawing at all.
 
-Measured on this machine:
+### The expensive part was not the drawing
 
-| State | CPU | RSS |
-|---|---|---|
-| Static icons only (any number) | **0.0%** | ~45 MB |
-| One animated icon @ 12fps | **~1.0–1.5%** | ~45 MB |
+With frames cached, animating still cost **7.5% of a core for a single 12fps icon**. A `sample` of
+the process says why, and it is not compositing:
 
-Animation is not free, and the cost is almost entirely AppKit recompositing the menu bar on each
-`button.image` assignment — not the drawing, which is cached. That is why the tick rate was
-measured down from 15fps to 12fps (~2.9% → ~1.5%) and why subscribers skip ticks where the
-quantised frame has not changed. Users who want none of it can turn animation off in General.
+```
+-[NSStatusBarButton setImage:]
+  └ -[NSStatusBarButtonCell drawWithFrame:inView:]
+     └ -[NSSystemStatusBar drawBackgroundInRect:inView:highlight:]
+        └ -[NSSceneStatusItem _setSelectedContentFrame:options:]
+           └ +[CAFenceHandle newFenceFromDefaultServer]
+              └ mach_msg          ← synchronous round trip to the window server, per frame
+```
+
+Assigning `button.image` invalidates the button; the button's redraw pushes a new selected-content
+frame into the status item's *scene* and fences with the window server to do it. Roughly 6 ms of
+that, twelve times a second, to re-measure an icon whose size never changed.
+
+`GlyphLayer` sidesteps it. Animated glyphs are presented as a tinted `CALayer` masked by the frame's
+alpha, sitting above the button; setting `contents` hands a finished image to the compositor and the
+view never redraws. Static icons keep going through `button.image`, where the cost is paid once and
+AppKit's template rendering is exact.
+
+Measured on the development machine (Debug build, two displays, 12fps, CPU time sampled over 15s):
+
+| State | `button.image =` | `GlyphLayer` | RSS |
+|---|---|---|---|
+| Static icons only (any number) | 0.0% | **0.0%** | ~45 MB |
+| Animation turned off in General | 0.0% | **0.0%** | ~43 MB |
+| 1 animated icon @ 12fps | 7.5% | **0.6%** | ~41 MB |
+| 2 animated icons @ 12fps | 10.9% | — | ~46 MB |
+| 4 animated icons @ 12fps | 16.0% | **0.8%** | ~51 MB |
+
+Three things were tried before this and are recorded so nobody repeats them: swapping the
+representations inside one reused `NSImage` (7.5%), `isBordered = false` to skip the background draw
+(8.0%), and a fixed `statusItem.length` instead of `variableLength` (7.7%). The fence is in the view
+redraw itself, so the only fix is not redrawing the view.
+
+The tradeoff is that template rendering becomes ours: the tint is `labelColor` resolved in the
+*button's* appearance, swapped for the menu-selection colour while the item's menu is open. What is
+given up is the last few percent of AppKit's vibrancy blend against the wallpaper behind a
+translucent menu bar — a fair price for 14×, and paid only by animated glyphs.
+
+Everything else is about not running at all: one shared timer rather than one per item; subscribers
+that skip ticks where the quantised frame has not changed; and the timer stopping outright when the
+screens sleep, the screen locks, the session is switched away, or every animated item is occluded.
+Users who want none of it can turn animation off in General, which costs exactly 0.0%.
 
 ## Concurrency
 
@@ -256,6 +342,14 @@ noise and makes the genuinely-background paths obvious. The exceptions are all d
   the main actor; `Notification` is not `Sendable`.
 - **`AppLauncher.log`** is `nonisolated` because `openApplication`'s completion handler is
   `@Sendable`.
+- **`IconAnimator` observes notifications with a `Sendable` value, not a closure.** The observer
+  block runs outside the main actor, so a `{ $0.screensAsleep = true }` handler is a data race the
+  compiler is right to reject. An `Effect` enum crosses instead and is switched on inside the
+  main-actor hop.
+- **Icon drawing closures are main-actor by inheritance; nested `func`s inside them are not.** A
+  closure literal formed in `@MainActor` context inherits that isolation, which is why every glyph
+  can call `pen.disc(...)` directly — but a local function declared inside one cannot. Helpers that
+  touch the pen are therefore closures (`let star = { ... }`), not nested functions.
 
 ## Configuration is treated as the user's data
 

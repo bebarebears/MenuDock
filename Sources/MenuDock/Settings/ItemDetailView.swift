@@ -13,6 +13,8 @@ struct ItemDetailView: View {
                     applicationEditor
                 case .group:
                     groupEditor
+                case .folder:
+                    folderEditor
                 }
             }
             .padding(20)
@@ -34,6 +36,7 @@ struct ItemDetailView: View {
                 IconEditor(
                     environment: environment,
                     spec: entryBinding.icon,
+                    size: $item.iconSize,
                     app: entry.app
                 )
             }
@@ -72,7 +75,9 @@ struct ItemDetailView: View {
                 IconEditor(
                     environment: environment,
                     spec: groupBinding.icon,
-                    app: nil
+                    size: $item.iconSize,
+                    app: nil,
+                    defaultBuiltinID: "grid"
                 )
             }
 
@@ -84,6 +89,188 @@ struct ItemDetailView: View {
             SectionBox("Apps in this Group") {
                 GroupMemberList(environment: environment, group: groupBinding)
             }
+        }
+    }
+
+    // MARK: - Folder
+
+    @ViewBuilder
+    private var folderEditor: some View {
+        if let folder = item.folderEntry {
+            let folderBinding = Binding<FolderEntry>(
+                get: { item.folderEntry ?? folder },
+                set: { item.folderEntry = $0 }
+            )
+
+            SectionBox("Icon") {
+                IconEditor(
+                    environment: environment,
+                    spec: folderBinding.icon,
+                    size: $item.iconSize,
+                    app: nil,
+                    defaultBuiltinID: "folder"
+                )
+            }
+
+            SectionBox("Name") {
+                TextField(folder.folders.count == 1 ? folder.folders[0].name : "Folder item name",
+                          text: folderBinding.name)
+                    .textFieldStyle(.roundedBorder)
+                Text("Shown in the tooltip. Leave it as the folder's own name if you like.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            SectionBox("Folders to Open") {
+                FolderList(environment: environment, entry: folderBinding)
+            }
+        }
+    }
+}
+
+// MARK: - Folder list
+
+/// Editor for the folders behind one menu bar icon.
+///
+/// Mirrors ``GroupMemberList`` deliberately — the two are the same gesture applied to different
+/// things, and making them look and behave differently would be a needless second thing to learn.
+private struct FolderList: View {
+    let environment: AppEnvironment
+    @Binding var entry: FolderEntry
+
+    @State private var selection: FolderReference.ID?
+    @State private var isTargeted = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            List(selection: $selection) {
+                ForEach(entry.folders) { folder in
+                    row(folder)
+                        .tag(folder.id)
+                }
+                .onMove { source, destination in
+                    entry.folders.move(fromOffsets: source, toOffset: destination)
+                }
+            }
+            .listStyle(.bordered)
+            .frame(height: 150)
+            .overlay {
+                if entry.folders.isEmpty {
+                    Text("Drag folders here, or use +")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .allowsHitTesting(false)
+                }
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                let added = urls.compactMap(FolderReference.init(folderURL:))
+                guard !added.isEmpty else { return false }
+                entry.folders.append(contentsOf: added)
+                adoptSingleFolderName()
+                return true
+            } isTargeted: { isTargeted = $0 }
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .opacity(isTargeted ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+
+            HStack(spacing: 8) {
+                Button(action: choose) {
+                    Image(systemName: "plus")
+                }
+                .help("Choose folders to add")
+
+                Button {
+                    entry.folders.removeAll { $0.id == selection }
+                    selection = nil
+                } label: {
+                    Image(systemName: "minus")
+                }
+                .disabled(selection == nil)
+                .help("Remove the selected folder")
+
+                Spacer()
+
+                if let selection, let folder = entry.folders.first(where: { $0.id == selection }) {
+                    Button("Show in Finder") { AppLauncher.revealFolder(folder) }
+                        .controlSize(.small)
+                }
+            }
+
+            if entry.folders.count > 1 {
+                Divider().padding(.vertical, 2)
+                Toggle("Open every folder on click", isOn: $entry.opensAllAtOnce)
+                Text(entry.opensAllAtOnce
+                        ? "Clicking the icon opens all \(entry.folders.count) folders in Finder."
+                        : "Clicking the icon lists the folders so you can pick one.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if entry.folders.count == 1 {
+                Text("Clicking the icon opens this folder in Finder.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func row(_ folder: FolderReference) -> some View {
+        let exists = folder.resolvedURL != nil
+        return HStack(spacing: 8) {
+            Image(nsImage: finderIcon(folder))
+                .resizable()
+                .frame(width: 18, height: 18)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(folder.name)
+                    .lineLimit(1)
+                Text(folder.displayPath)
+                    .font(.caption)
+                    .foregroundStyle(exists ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.red))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            if !exists {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help("This folder could not be found. It may be on a volume that is not mounted.")
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func finderIcon(_ folder: FolderReference) -> NSImage {
+        if let url = folder.resolvedURL {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSImage(systemSymbolName: "questionmark.folder", accessibilityDescription: nil)
+            ?? NSImage()
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Choose folders to open from the menu bar."
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+
+        guard panel.runModal() == .OK else { return }
+        let added = panel.urls.compactMap(FolderReference.init(folderURL:))
+        guard !added.isEmpty else { return }
+        entry.folders.append(contentsOf: added)
+        adoptSingleFolderName()
+    }
+
+    /// "Folders" is a placeholder, not a name. The moment an item points at exactly one folder,
+    /// that folder's own name is the better answer.
+    private func adoptSingleFolderName() {
+        guard entry.folders.count == 1 else { return }
+        let trimmed = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "Folders" {
+            entry.name = entry.folders[0].name
         }
     }
 }

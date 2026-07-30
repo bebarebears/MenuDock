@@ -105,6 +105,114 @@ struct MenuBuilder {
         return menu
     }
 
+    // MARK: - Folder items
+
+    /// Left-click menu for a folder item holding several folders: one row per folder, so the
+    /// user picks which window they want. Never shown for a single-folder item — that one opens
+    /// straight away, which is the whole point of putting it in the menu bar.
+    func folderMenu(for entry: FolderEntry, itemID: DockItem.ID) -> NSMenu {
+        let menu = NSMenu()
+        menu.addHeader(entry.effectiveTitle)
+
+        if entry.folders.isEmpty {
+            menu.addPlaceholder("No folders in this item")
+        }
+
+        for folder in entry.folders {
+            let row = menu.addAction(folder.name, image: folderRowIcon(folder)) {
+                AppLauncher.openFolder(folder)
+            }
+            // Deliberately **no submenu** on these rows. AppKit never fires a menu item's action
+            // when the item has a submenu — it opens the submenu instead — so attaching one here
+            // would silently make every row in this menu do nothing on click. The per-folder
+            // extras live in the right-click menu, where they are not competing with the one
+            // action this menu exists to offer.
+            //
+            // A missing folder stays clickable: the alert explains what happened, which is more
+            // useful than a greyed-out row the user cannot ask a question of.
+            if folder.resolvedURL == nil {
+                row.attributedTitle = missingRowTitle(folder.name)
+            }
+        }
+
+        if entry.folders.count > 1 {
+            menu.addItem(.separator())
+            menu.addAction("Open All Folders") {
+                for folder in entry.folders { AppLauncher.openFolder(folder) }
+            }
+        }
+
+        appendManagementSection(to: menu, itemID: itemID, removeTitle: "Remove from Menu Bar")
+        return menu
+    }
+
+    /// Right-click menu for a folder item.
+    func contextMenu(for entry: FolderEntry, itemID: DockItem.ID) -> NSMenu {
+        let menu = NSMenu()
+        menu.addHeader(entry.effectiveTitle)
+
+        if let folder = entry.folders.first, entry.folders.count == 1 {
+            menu.addAction("Open in Finder") { AppLauncher.openFolder(folder) }
+            menu.addAction("Open in New Window") { AppLauncher.openFolderInNewWindow(folder) }
+                .asAlternate()
+            menu.addAction("Reveal in Enclosing Folder") { AppLauncher.revealFolder(folder) }
+            menu.addItem(.separator())
+            menu.addAction("Copy Path") { AppLauncher.copyPath(folder) }
+        } else if !entry.folders.isEmpty {
+            menu.addAction("Open All Folders") {
+                for folder in entry.folders { AppLauncher.openFolder(folder) }
+            }
+            menu.addItem(.separator())
+            // Submenus are fine *here*: this is the management menu, so a row is a heading for
+            // the actions beneath it rather than an action of its own.
+            for folder in entry.folders {
+                let row = menu.addAction(folder.name, image: folderRowIcon(folder)) {
+                    AppLauncher.openFolder(folder)
+                }
+                row.submenu = folderSubmenu(for: folder)
+            }
+        } else {
+            menu.addPlaceholder("No folders in this item")
+        }
+
+        appendManagementSection(to: menu, itemID: itemID, removeTitle: "Remove from Menu Bar")
+        return menu
+    }
+
+    private func folderSubmenu(for folder: FolderReference) -> NSMenu {
+        let menu = NSMenu()
+        menu.addAction("Open in Finder") { AppLauncher.openFolder(folder) }
+        menu.addAction("Open in New Window") { AppLauncher.openFolderInNewWindow(folder) }
+        menu.addAction("Reveal in Enclosing Folder") { AppLauncher.revealFolder(folder) }
+        menu.addItem(.separator())
+        menu.addAction("Copy Path") { AppLauncher.copyPath(folder) }
+        return menu
+    }
+
+    /// Finder's own icon for the folder, which carries the tag colour and any custom icon the
+    /// user set — far more recognisable in a list than a generic folder glyph repeated N times.
+    private func folderRowIcon(_ folder: FolderReference) -> NSImage {
+        let image: NSImage
+        if let url = folder.resolvedURL {
+            image = NSWorkspace.shared.icon(forFile: url.path)
+        } else {
+            image = NSImage(systemSymbolName: "questionmark.folder",
+                            accessibilityDescription: nil) ?? NSImage()
+        }
+        let copy = image.copy() as? NSImage ?? image
+        copy.size = NSSize(width: 16, height: 16)
+        return copy
+    }
+
+    private func missingRowTitle(_ title: String) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: title)
+        result.append(NSAttributedString(
+            string: "  (missing)",
+            attributes: [.foregroundColor: NSColor.secondaryLabelColor]
+        ))
+        return result
+    }
+
     private func memberSubmenu(for member: AppEntry, isRunning: Bool) -> NSMenu {
         let menu = NSMenu()
         let app = member.app

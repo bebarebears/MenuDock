@@ -40,9 +40,14 @@ struct BuiltinIcon: Identifiable {
         case web = "Web & Browsing"
         case communication = "Communication"
         case productivity = "Productivity"
+        case files = "Files & Folders"
         case development = "Development"
         case media = "Media"
         case design = "Design"
+        case finance = "Finance"
+        case travel = "Travel"
+        case home = "Home & Utilities"
+        case social = "Social"
         case system = "System & Utilities"
 
         var id: String { rawValue }
@@ -53,16 +58,21 @@ struct BuiltinIcon: Identifiable {
             case .web: "globe"
             case .communication: "bubble.left.and.bubble.right"
             case .productivity: "checkmark.circle"
+            case .files: "folder"
             case .development: "chevron.left.forwardslash.chevron.right"
             case .media: "play.circle"
             case .design: "paintbrush.pointed"
+            case .finance: "creditcard"
+            case .travel: "airplane"
+            case .home: "house"
+            case .social: "person.2"
             case .system: "gearshape"
             }
         }
     }
 }
 
-/// The complete built-in set: 36 static glyphs plus 12 animated ones.
+/// The complete built-in set: 78 static glyphs plus 28 animated ones.
 @MainActor
 enum BuiltinIconCatalog {
 
@@ -88,11 +98,14 @@ enum BuiltinIconCatalog {
         }
     }
 
-    /// How many distinct frames an animated icon is quantised to.
+    /// How many distinct frames one animation loop is quantised to.
     ///
     /// Frames are cached by index, so a loop is rendered at most this many times ever — after
     /// the first cycle, animating costs a dictionary lookup and an image assignment.
     static let frameCount = 36
+
+    /// Frames in the whole index space: the idle loop, then the one-shot click reaction.
+    static let totalFrameCount = frameCount * 2
 
     /// Current phase for an icon, derived from absolute time so every status item showing the
     /// same icon stays in step and no per-item animation state has to be stored.
@@ -101,6 +114,80 @@ enum BuiltinIconCatalog {
         let raw = time.truncatingRemainder(dividingBy: period) / period
         // Quantise so the render cache is hit instead of drawing a new frame every tick.
         return (raw * Double(frameCount)).rounded(.down) / Double(frameCount)
+    }
+
+    /// The cache slot a phase belongs to, covering the idle loop (`0…1`) and the click reaction
+    /// (`1…2`) in one index space.
+    ///
+    /// Every caller derives frame identity from *this* function. When the cache used rounding
+    /// and the "has the frame changed?" check used truncation, the two disagreed near frame
+    /// boundaries and the disagreement showed up as redundant redraws — which is the one cost
+    /// animating a menu bar icon actually has.
+    static func frameIndex(for phase: Double) -> Int {
+        let scaled = Int((phase * Double(frameCount)).rounded())
+        return min(max(scaled, 0), totalFrameCount - 1)
+    }
+
+    static func phase(forFrame index: Int) -> Double {
+        Double(index) / Double(frameCount)
+    }
+
+    // MARK: - Frame cache
+
+    /// Boxed so the hot path mutates one shared array in place. A `[Key: [NSImage?]]` would
+    /// copy-on-write a 72-element array on every stored frame.
+    private final class FrameStrip {
+        var images: [NSImage?]
+        init(count: Int) { images = [NSImage?](repeating: nil, count: count) }
+    }
+
+    private struct FrameKey: Hashable {
+        let id: String
+        let size: Double
+        let showsRunningDot: Bool
+    }
+
+    private static var frameStrips: [FrameKey: FrameStrip] = [:]
+
+    /// A single animation frame, rendered once and reused for the life of the cache.
+    ///
+    /// This is the whole reason animation is affordable. Steady-state cost per tick is a
+    /// dictionary lookup, an array subscript, and an `NSImage` assignment — no drawing, no
+    /// bitmap allocation, no `NSGraphicsContext`. Every surface that shows animated glyphs (the
+    /// menu bar, the icon gallery, the preview well) goes through here, so the gallery's ~30
+    /// live previews share frames with the status items instead of each re-rendering its own.
+    static func frame(
+        icon: BuiltinIcon,
+        size: Double,
+        showsRunningDot: Bool = false,
+        index: Int
+    ) -> NSImage {
+        let key = FrameKey(id: icon.id, size: size, showsRunningDot: showsRunningDot)
+        let strip: FrameStrip
+        if let existing = frameStrips[key] {
+            strip = existing
+        } else {
+            strip = FrameStrip(count: totalFrameCount)
+            frameStrips[key] = strip
+        }
+
+        let slot = min(max(index, 0), totalFrameCount - 1)
+        if let cached = strip.images[slot] { return cached }
+
+        let rendered = IconRenderer.menuBarImage(
+            builtin: icon,
+            size: size,
+            showsRunningDot: showsRunningDot,
+            phase: phase(forFrame: slot)
+        )
+        strip.images[slot] = rendered
+        return rendered
+    }
+
+    /// Drops every cached frame. Needed when icon sizes change, or when the display setup
+    /// changes and renders were baked for the old backing scale.
+    static func invalidateFrames() {
+        frameStrips.removeAll(keepingCapacity: true)
     }
 
     /// Renders an icon to a menu-bar-ready template image at exactly `size` points.
@@ -112,36 +199,9 @@ enum BuiltinIconCatalog {
         return image(icon: icon, size: size, phase: phase)
     }
 
+    /// Uncached render. Prefer ``frame(icon:size:showsRunningDot:index:)`` for anything that
+    /// draws repeatedly — this exists for one-off renders at unusual sizes.
     static func image(icon: BuiltinIcon, size: Double, phase: Double = 0) -> NSImage {
-        let edge = CGFloat(size)
-        let canvas = NSSize(width: edge, height: edge)
-        let image = NSImage(size: canvas)
-
-        for scale in [CGFloat(1), CGFloat(2)] {
-            guard let rep = NSBitmapImageRep(
-                bitmapDataPlanes: nil,
-                pixelsWide: Int(edge * scale), pixelsHigh: Int(edge * scale),
-                bitsPerSample: 8, samplesPerPixel: 4,
-                hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB,
-                bytesPerRow: 0, bitsPerPixel: 0
-            ) else { continue }
-
-            rep.size = canvas
-
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-            inDesignSpace(NSRect(origin: .zero, size: canvas)) {
-                icon.draw(Pen(), phase)
-            }
-            NSGraphicsContext.restoreGraphicsState()
-
-            image.addRepresentation(rep)
-        }
-
-        // Built-ins are always monochrome by construction, so template rendering is
-        // unconditional — they tint with Light/Dark mode and menu bar transparency for free.
-        image.isTemplate = true
-        return image
+        IconRenderer.menuBarImage(builtin: icon, size: size, showsRunningDot: false, phase: phase)
     }
 }
