@@ -12,7 +12,9 @@ cask "menudock" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :sonoma"
+  # Symbol form, not ">= :sonoma" — the string comparison syntax is deprecated in
+  # Homebrew 6 and warns on every `brew info`/`brew install`.
+  depends_on macos: :sonoma
 
   app "MenuDock.app"
 
