@@ -15,7 +15,7 @@ exactly like a Dock tile, without the Dock.
 
 <br>
 
-<img src="docs/images/menu-bar-detail.png" width="490" alt="Seven MenuDock icons in the macOS menu bar">
+<img src="docs/images/menu-bar-detail.png" width="520" alt="Seven MenuDock icons in the macOS menu bar">
 
 <sub>Apps, a folder and a group — one click from launching.</sub>
 
@@ -72,9 +72,10 @@ what is running. Right-click for hide, quit and new-window.
 **Group things.** Put several apps behind one icon and they become a dropdown menu.
 
 <div align="center">
-  <img src="docs/images/menu-bar.png" width="860" alt="MenuDock icons sitting among the system status items">
+  <img src="docs/images/menu-bar.png" width="880" alt="A full macOS menu bar, with seven MenuDock items sitting between the app menus and the system status items">
   <br>
-  <sub>Your items sit among the real status items, and behave like they belong there.</sub>
+  <sub>The whole menu bar. Your items sit among the system ones and behave like they belong there —
+  and because they are template images, they take the bar's own tint.</sub>
 </div>
 
 ### 106 built-in icons, drawn rather than shipped
