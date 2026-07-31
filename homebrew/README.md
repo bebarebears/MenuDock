@@ -4,29 +4,28 @@
 Homebrew reads `bebarebears/homebrew-tap`, a separate repository. This copy lives here so the
 cask is versioned alongside the app it installs.
 
-## First-time setup
+The tap is live at
+[bebarebears/homebrew-tap](https://github.com/bebarebears/homebrew-tap) — the `homebrew-`
+prefix is what makes `brew tap bebarebears/tap` resolve, and users never type it.
 
-Do this once, after the first GitHub Release exists.
+## Publishing a new version by hand
 
-1. Create a public repository named **`homebrew-tap`** under `bebarebears`. The `homebrew-`
-   prefix is what makes `brew tap bebarebears/tap` resolve; users never type it.
+Only needed while `TAP_TOKEN` is unset; see below for the automatic route.
 
-2. Copy the cask in, with the real checksum from the release:
+```bash
+git clone https://github.com/bebarebears/homebrew-tap.git
+cp homebrew/Casks/menudock.rb homebrew-tap/Casks/
+# update version + sha256 to match the release, then commit and push
+```
 
-   ```bash
-   git clone https://github.com/bebarebears/homebrew-tap.git
-   mkdir -p homebrew-tap/Casks
-   cp homebrew/Casks/menudock.rb homebrew-tap/Casks/
-   # then edit version + sha256 to match the release
-   ```
+The `sha256` is printed by `Scripts/make-dmg.sh` and included in every release's notes.
+To check a change before anyone else gets it:
 
-   The `sha256` is printed by `Scripts/make-dmg.sh` and included in every release's notes.
-
-3. Check it works:
-
-   ```bash
-   brew install --cask --no-quarantine bebarebears/tap/menudock
-   ```
+```bash
+brew update && brew info --cask bebarebears/tap/menudock
+brew fetch --cask bebarebears/tap/menudock   # downloads and verifies the checksum,
+                                             # without installing anything
+```
 
 ## Keeping it up to date automatically
 
