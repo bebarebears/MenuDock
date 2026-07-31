@@ -13,12 +13,25 @@ concurrency:
 jobs:
   build:
     name: Build
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      # MenuDock uses `isolated deinit` and SWIFT_DEFAULT_ACTOR_ISOLATION, both Swift 6.2+
+      # (Xcode 26). On an older image the build fails with a wall of actor-isolation errors
+      # that never mentions the toolchain, so fail loudly and early instead.
+      - name: Check the toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          SWIFT=$(swift -version 2>&1 | sed -nE 's/.*Apple Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -1)
+          if [ "$(printf '%s\n6.2\n' "$SWIFT" | sort -V | head -1)" != "6.2" ]; then
+            echo "::error::Swift $SWIFT is too old — MenuDock needs 6.2 or newer (Xcode 26)"
+            exit 1
+          fi
 
       # Builds Release, which is the universal (arm64 + x86_64) configuration — so a PR
       # that only compiles for the runner's native slice fails here rather than at
