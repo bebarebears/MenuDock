@@ -28,6 +28,17 @@ $(ICON):
 icon:
 	@swift Tools/GenerateAppIcon/main.swift
 
+## Redraw the README icon sheets and GIF from the icon-drawing code itself
+showcase:
+	@swiftc -O -swift-version 6 -default-isolation MainActor \
+		Sources/MenuDock/Icons/Builtin/Pen.swift \
+		Sources/MenuDock/Icons/Builtin/BuiltinIcon.swift \
+		Sources/MenuDock/Icons/Builtin/StaticIcons.swift \
+		Sources/MenuDock/Icons/Builtin/AnimatedIcons.swift \
+		Tools/RenderShowcase/main.swift \
+		-o $(DERIVED)/render-showcase
+	@$(DERIVED)/render-showcase docs/images
+
 build: project
 	@xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) \
 		-derivedDataPath $(DERIVED) build | \

@@ -62,6 +62,10 @@ Animation should be restrained: 2.2–4.5s periods, eased rather than linear, sm
 pure opacity. A menu bar sits in peripheral vision all day, and anything sharp there reads as
 an alert.
 
+After adding one, run `make showcase`. It redraws the contact sheets and the animated GIF in
+`docs/images/` from the icon code itself, so the README can never show a set that no longer
+matches what ships. Commit the regenerated images with your change.
+
 ## Reporting a bug
 
 `make logs` output is the single most useful thing you can attach, along with your macOS

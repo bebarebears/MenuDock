@@ -208,7 +208,12 @@ mismatched logos. Users who want a specific brand mark can still drop in their o
 
 Animation is deliberately restrained — 2.2–4.5s periods, eased rather than linear, small
 amplitude or pure opacity. A menu bar sits in motion-sensitive peripheral vision all day, so
-anything sharp there reads as an alert. Motion is suppressed entirely under **Reduce Motion**, and
+anything sharp there reads as an alert.
+
+![Six animated glyphs sampled across one loop](images/icons-motion.png)
+
+*One loop of six glyphs, sampled left to right — the whole amplitude of the motion is visible
+here, which is the point. Regenerate with `make showcase`.* Motion is suppressed entirely under **Reduce Motion**, and
 pauses when the screens sleep, when the screen locks, when the session is switched away, and when
 every animated icon is occluded — which is what happens the moment a fullscreen app hides the menu
 bar. Low Power Mode halves the frame rate and says so in Settings.

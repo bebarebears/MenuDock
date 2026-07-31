@@ -13,16 +13,13 @@ exactly like a Dock tile, without the Dock.
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?style=for-the-badge&logo=apple)](https://github.com/bebarebears/MenuDock/releases/latest)
 [![MIT](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 
-</div>
+<br>
 
-<!--
-  SCREENSHOTS — the one thing still missing. Drop 2–3 PNGs into docs/images/ and
-  paste the markdown below back in here. Suggested shots:
-    menu-bar.png  — a close crop of your menu bar showing 5–6 MenuDock icons
-    settings.png  — the Settings window with an item selected
-    gallery.png   — the built-in icon gallery
-  Then use:  ![MenuDock in the menu bar](docs/images/menu-bar.png)
--->
+<img src="docs/images/menu-bar-detail.png" width="490" alt="Seven MenuDock icons in the macOS menu bar">
+
+<sub>Apps, a folder and a group — one click from launching.</sub>
+
+</div>
 
 ---
 
@@ -68,20 +65,55 @@ xattr -dr com.apple.quarantine /Applications/MenuDock.app
 
 **Add anything.** Any installed app, or any folder — a folder item opens straight in Finder.
 
-**Any icon, any size.** Choose the app's own icon, one of **106 built-in glyphs** (78 static, 28
-gently animated), an SF Symbol, or drop in your own PNG or SVG. Every item can override the global
-icon size, so Finder can sit a little larger than the rest.
-
-**Group things.** Put several apps behind one icon and they become a dropdown menu.
-
 **One click to launch.** Click launches if the app is closed, brings it forward if it is open, and
 restores a window if it is running with none — the same behaviour as a real Dock tile. A dot marks
 what is running. Right-click for hide, quit and new-window.
 
-**Reorder by dragging** the list in Settings; the menu bar follows.
+**Group things.** Put several apps behind one icon and they become a dropdown menu.
 
-**It stays out of the way.** Animation is suppressed under Reduce Motion, pauses when your screen
-sleeps or locks, and halves its frame rate in Low Power Mode. Steady-state CPU use is under 1%.
+<div align="center">
+  <img src="docs/images/menu-bar.png" width="860" alt="MenuDock icons sitting among the system status items">
+  <br>
+  <sub>Your items sit among the real status items, and behave like they belong there.</sub>
+</div>
+
+### 106 built-in icons, drawn rather than shipped
+
+Every glyph is **drawn in code** on a 24 × 24 grid, so it is pixel-exact at any menu bar height,
+weighs a few hundred bytes, and tints itself for Light and Dark mode automatically.
+
+<div align="center">
+  <img src="docs/images/icons-static.png" width="880" alt="All 78 static built-in glyphs">
+  <br>
+  <sub>78 static glyphs, across 12 categories.</sub>
+</div>
+
+Another 28 are **gently animated** — and gently is the point. Periods run 2.2–4.5 seconds, eased
+rather than linear, small amplitude or pure opacity. A menu bar sits in your peripheral vision all
+day, so anything sharp there reads as an alert.
+
+<div align="center">
+  <img src="docs/images/icons-animated.gif" width="880" alt="All 28 animated built-in glyphs, looping">
+  <br>
+  <sub>28 animated glyphs. Four of them — the dog, the cat, the ghost, the bell — also react when clicked.</sub>
+</div>
+
+Prefer your own? Point any item at an SF Symbol, a PNG, or an SVG that stays vector all the way
+to the screen.
+
+### Everything is per item
+
+<div align="center">
+  <img src="docs/images/settings.png" width="900" alt="The MenuDock settings window, showing the item list and the built-in icon gallery">
+</div>
+
+Pick an icon source, override the size for that one item, reorder by dragging — the menu bar
+follows the list. The size control previews at **true size** against real system items, because
+16pt and 19pt are indistinguishable in a large preview well.
+
+**It stays out of the way.** Animation is suppressed entirely under Reduce Motion, pauses when
+your screen sleeps or locks, and halves its frame rate in Low Power Mode. Steady-state CPU use is
+under 1%, and turning animation off costs exactly 0.0%.
 
 Your setup lives in `~/Library/Application Support/MenuDock/`. Custom icons are **copied** in, so
 cleaning out `~/Downloads` never breaks your menu bar.
@@ -117,6 +149,7 @@ make run
 | `make dmg` | Build a universal Release `.dmg` into `dist/` |
 | `make project` | Regenerate `MenuDock.xcodeproj` after adding or removing files |
 | `make icon` | Redraw `Resources/AppIcon.icns` |
+| `make showcase` | Redraw the icon sheets and GIF in `docs/images/` |
 | `make logs` | Tail the app's `os_log` output |
 | `make stop` | Quit MenuDock |
 
