@@ -1,6 +1,6 @@
 cask "menudock" do
   version "0.1.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "a6a4e66da32a84a1623723708aad185764119459a62d4bfdbd3e947575b5e294"
 
   url "https://github.com/bebarebears/MenuDock/releases/download/v#{version}/MenuDock-#{version}.dmg"
   name "MenuDock"
