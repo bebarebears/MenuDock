@@ -6,7 +6,7 @@
 
 **Your Dock, in the menu bar.**
 
-Pin any app or folder to the macOS menu bar. Click to launch, activate or open —
+Pin any app or folder to the macOS menu bar. Click to launch or open —
 exactly like a Dock tile, without the Dock.
 
 [![Download](https://img.shields.io/github/v/release/bebarebears/MenuDock?label=download&style=for-the-badge)](https://github.com/bebarebears/MenuDock/releases/latest)
