@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in MenuDock does not work the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "e.g. 15.2, or 26.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install MenuDock?
+      options:
+        - Homebrew
+        - Downloaded the DMG
+        - Built from source
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: MenuDock version
+      description: Settings › General shows it, or `mdls -name kMDItemVersion /Applications/MenuDock.app`
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Run `make logs` from a source checkout, or:
+        `log show --predicate 'subsystem == "com.bebarebears.MenuDock"' --last 10m`
+        Then reproduce the problem and paste what appears.
+      render: shell

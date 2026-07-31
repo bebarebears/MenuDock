@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # Builds Release, which is the universal (arm64 + x86_64) configuration — so a PR
+      # that only compiles for the runner's native slice fails here rather than at
+      # release time.
+      - name: Build
+        run: |
+          make icon
+          xcodegen generate
+          set -o pipefail
+          xcodebuild -project MenuDock.xcodeproj \
+                     -scheme MenuDock \
+                     -configuration Release \
+                     -destination 'generic/platform=macOS' \
+                     -derivedDataPath .build \
+                     build
+
+      - name: Check the binary is universal
+        run: |
+          BIN=.build/Build/Products/Release/MenuDock.app/Contents/MacOS/MenuDock
+          ARCHS="$(lipo -archs "$BIN")"
+          echo "archs: $ARCHS"
+          for want in arm64 x86_64; do
+            case "$ARCHS" in
+              *"$want"*) ;;
+              *) echo "::error::missing $want slice"; exit 1 ;;
+            esac
+          done

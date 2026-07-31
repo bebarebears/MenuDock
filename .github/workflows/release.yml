@@ -1,0 +1,143 @@
+name: Release
+
+# Cutting a release is one command:
+#
+#     git tag v1.0.0 && git push origin v1.0.0
+#
+# This builds a universal Release .app, packages it as a .dmg, publishes a GitHub
+# Release with it attached, and — if a TAP_TOKEN secret exists — bumps the Homebrew
+# cask in bebarebears/homebrew-tap so `brew upgrade` picks it up.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v (e.g. 1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+      has_tap_token: ${{ steps.meta.outputs.has_tap_token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: meta
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Secrets cannot be read from a job-level `if`, so surface presence as an output.
+          if [ -n "$TAP_TOKEN" ]; then
+            echo "has_tap_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tap_token=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Building MenuDock $VERSION"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build universal Release
+        run: |
+          make icon
+          xcodegen generate
+          set -o pipefail
+          xcodebuild -project MenuDock.xcodeproj \
+                     -scheme MenuDock \
+                     -configuration Release \
+                     -destination 'generic/platform=macOS' \
+                     -derivedDataPath .build \
+                     MARKETING_VERSION="${{ steps.meta.outputs.version }}" \
+                     CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+                     build
+
+      - name: Package the disk image
+        id: package
+        run: |
+          Scripts/make-dmg.sh .build/Build/Products/Release/MenuDock.app dist | tee package.log
+          DMG="dist/MenuDock-${{ steps.meta.outputs.version }}.dmg"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 "$DMG" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # Quoted heredoc: nothing here is expanded by the shell, so the fenced code block
+      # and inline backticks need no escaping. The two values come from Actions, which
+      # substitutes them textually before the script runs.
+      - name: Write the release notes
+        run: |
+          cat > notes.md <<'EOF'
+          ## Install
+
+          ```bash
+          brew install --cask --no-quarantine bebarebears/tap/menudock
+          ```
+
+          Or download **MenuDock-__VERSION__.dmg** below, open it, and drag MenuDock to
+          Applications. MenuDock has no Dock icon — after launching, look in your menu bar.
+
+          ### If macOS says "Apple could not verify MenuDock"
+
+          MenuDock is not signed with a paid Apple Developer certificate, so macOS cannot
+          check who built it. Open **System Settings › Privacy & Security**, scroll to the
+          bottom and click **Open Anyway**. You only do this once. Homebrew installs are
+          not affected.
+
+          Requires macOS 14 Sonoma or later. Universal — Apple Silicon and Intel.
+
+          `sha256  __SHA256__`
+
+          ---
+          EOF
+          sed -i '' \
+            -e "s/__VERSION__/${{ steps.meta.outputs.version }}/g" \
+            -e "s/__SHA256__/${{ steps.package.outputs.sha256 }}/g" \
+            notes.md
+          cat notes.md
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.meta.outputs.version }}" \
+            "${{ steps.package.outputs.dmg }}" \
+            --title "MenuDock ${{ steps.meta.outputs.version }}" \
+            --notes-file notes.md \
+            --generate-notes
+
+  update-tap:
+    name: Bump the Homebrew cask
+    needs: release
+    if: needs.release.outputs.has_tap_token == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tap
+        uses: actions/checkout@v4
+        with:
+          repository: bebarebears/homebrew-tap
+          token: ${{ secrets.TAP_TOKEN }}
+
+      - name: Update and push the cask
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          SHA256: ${{ needs.release.outputs.sha256 }}
+        run: |
+          sed -i -E "s/^  version \".*\"/  version \"$VERSION\"/" Casks/menudock.rb
+          sed -i -E "s/^  sha256 \".*\"/  sha256 \"$SHA256\"/" Casks/menudock.rb
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "menudock $VERSION"
+          git push
