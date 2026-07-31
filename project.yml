@@ -1,7 +1,7 @@
 name: MenuDock
 
 options:
-  bundleIdPrefix: com.kai
+  bundleIdPrefix: com.bebarebears
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -19,6 +19,13 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     DEAD_CODE_STRIPPING: YES
     CLANG_ENABLE_MODULES: YES
+  configs:
+    # Shipped builds are universal so one download serves Apple Silicon and Intel.
+    # Debug stays native-only — `make run` should not pay for a second slice.
+    Release:
+      ARCHS: "arm64 x86_64"
+      ONLY_ACTIVE_ARCH: NO
+      SWIFT_COMPILATION_MODE: wholemodule
 
 targets:
   MenuDock:
@@ -32,10 +39,14 @@ targets:
     settings:
       base:
         PRODUCT_NAME: MenuDock
-        PRODUCT_BUNDLE_IDENTIFIER: com.kai.MenuDock
+        PRODUCT_BUNDLE_IDENTIFIER: com.bebarebears.MenuDock
         INFOPLIST_FILE: Resources/Info.plist
-        # Ad-hoc signing keeps local `make run` working with no developer account.
-        # Switch to a Developer ID identity + ENABLE_HARDENED_RUNTIME=YES to distribute.
+        # Ad-hoc signing keeps `make run` and CI working with no developer account. An
+        # ad-hoc signature is what lets the binary run at all on Apple Silicon; it is not
+        # a Developer ID, so a downloaded build is quarantined until the user allows it
+        # once (see README) or installs via Homebrew with --no-quarantine.
+        # To ship notarised builds instead: set a Developer ID identity here, flip
+        # ENABLE_HARDENED_RUNTIME to YES, and add the notarytool step to release.yml.
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO

@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest something MenuDock should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem you are hitting, rather than the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like MenuDock to do about it?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before you post
+      options:
+        - label: I checked docs/ARCHITECTURE.md, in case this is a deliberate constraint rather than an oversight
