@@ -222,8 +222,8 @@ struct MenuBuilder {
             .map { $0.displayName.size(withAttributes: [.font: font]).width }
             .max() ?? 0
         // Not the current values: the point is a column that cannot move, so it is measured
-        // against the longest string `verboseString` is capable of returning.
-        let widestValue = ["100.0%", "999.99 GB/s"]
+        // against the longest string `verboseString` is capable of returning, for every unit.
+        let widestValue = ["100.0%", "999.99 GB/s", "999.9 W"]
             .map { $0.size(withAttributes: [.font: digits]).width }
             .max() ?? 0
 

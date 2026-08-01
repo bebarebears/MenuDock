@@ -53,6 +53,7 @@ final class MetricsMonitor {
     @ObservationIgnored private var cpu: SystemMetrics.CPUSampler?
     @ObservationIgnored private var memory: SystemMetrics.MemorySampler?
     @ObservationIgnored private var gpu: SystemMetrics.GPUSampler?
+    @ObservationIgnored private var power: SystemMetrics.PowerSampler?
     @ObservationIgnored private var network: SystemMetrics.NetworkSampler?
     @ObservationIgnored private var disk: SystemMetrics.DiskSampler?
 
@@ -156,6 +157,7 @@ final class MetricsMonitor {
         cpu = demanded.contains(.cpu) ? (cpu ?? SystemMetrics.CPUSampler()) : nil
         memory = demanded.contains(.memory) ? (memory ?? SystemMetrics.MemorySampler()) : nil
         gpu = demanded.contains(.gpu) ? (gpu ?? SystemMetrics.GPUSampler()) : nil
+        power = demanded.contains(.power) ? (power ?? SystemMetrics.PowerSampler()) : nil
 
         let wantsNetwork = demanded.contains(.networkDown) || demanded.contains(.networkUp)
         network = wantsNetwork ? (network ?? SystemMetrics.NetworkSampler()) : nil
@@ -237,6 +239,9 @@ final class MetricsMonitor {
         }
         if demanded.contains(.gpu) {
             record(gpu?.sample(), for: .gpu)
+        }
+        if demanded.contains(.power) {
+            record(power?.sample(), for: .power)
         }
         if demanded.contains(.networkDown) || demanded.contains(.networkUp) {
             var sampler = network

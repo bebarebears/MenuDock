@@ -80,10 +80,10 @@ what is running. Right-click for hide, quit and new-window.
 
 ### Watch your machine, without watching Activity Monitor
 
-An **Activity** item is a live readout of the system: CPU, GPU, memory, network up and down, and
-disk read and write. Put as many metrics as you like behind one icon, pick how each one is drawn —
-**graph**, **bar**, **ring** or **number** — and caption them with nothing, a letter, or a word.
-The item sizes itself to whatever you chose; you never set a width.
+An **Activity** item is a live readout of the system: CPU, GPU, **power draw in watts**, memory,
+network up and down, and disk read and write. Put as many metrics as you like behind one icon,
+pick how each one is drawn — **graph**, **bar**, **ring** or **number** — and caption them with
+nothing, a letter, or a word. The item sizes itself to whatever you chose; you never set a width.
 
 <div align="center">
   <img src="docs/images/activity-styles.png" width="880" alt="Every Activity gauge style rendered on a light and a dark menu bar at three sizes">
@@ -93,7 +93,19 @@ The item sizes itself to whatever you chose; you never set a width.
 </div>
 
 Clicking one lists every reading in full — `11.9 MB/s` rather than the four characters that fit in
-the bar — and opens Activity Monitor if you want the rest.
+the bar — and keeps updating while the menu is open.
+
+**About the power reading.** It is **SoC package power** — CPU + GPU + Neural Engine — read from
+the energy accumulators Apple Silicon publishes through IOReport, the same counters
+`powermetrics` reports. It is a measurement off the chip's own power-management hardware, not an
+estimate from CPU usage. It is *not* wall power: the display, SSD, Wi-Fi and anything on USB are
+excluded, so it reads lower than a socket meter. On an M5 Air that is roughly 1–2 W idle and
+20–26 W with every core busy.
+
+Why not something more complete? `powermetrics` refuses to run without root, battery current is
+**zero whenever you are plugged in**, and `AdapterDetails.Watts` is the charger's rating rather
+than its draw. Package power is the honest ceiling on what any unprivileged app can measure — and
+it is the part that actually moves when your work does.
 
 **It costs almost nothing.** Everything is read straight from the kernel; nothing shells out to
 `top` or `ioreg`. Only the metrics you actually display are sampled, so a CPU-only item never

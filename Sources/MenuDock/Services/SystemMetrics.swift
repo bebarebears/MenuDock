@@ -189,6 +189,192 @@ enum SystemMetrics {
         }
     }
 
+    // MARK: - Power
+
+    /// Package power draw in watts — CPU plus GPU plus the Neural Engine.
+    ///
+    /// ## Where the number comes from
+    ///
+    /// Apple Silicon publishes per-block **energy accumulators** through IOReport, in an
+    /// `"Energy Model"` channel group. Each channel is a monotonically increasing joule count;
+    /// power is the difference between two reads divided by the time between them. These are the
+    /// same counters `powermetrics` reports, which is the point: it is a measurement off the
+    /// SoC's own power-management hardware, not an estimate derived from utilisation.
+    ///
+    /// ## Why not the alternatives
+    ///
+    /// - **`powermetrics`** is the obvious source and it is unusable here: it refuses to run
+    ///   without root, so a menu bar app would need a privileged helper to read a number.
+    /// - **Battery current × voltage** is fully public API and reads **zero on AC power** —
+    ///   `InstantAmperage` is battery flow, not consumption. Useless for a plugged-in laptop or
+    ///   any desktop.
+    /// - **`AdapterDetails.Watts`** is the charger's negotiated *rating* (50 W here), not draw.
+    /// - **SMC keys** like `PSTR` do carry total system power, but the classic `AppleSMC` user
+    ///   client is not exposed under that class on current Apple Silicon.
+    ///
+    /// ## What it does and does not include
+    ///
+    /// This is **SoC package power**, not wall power. It excludes the display, SSD, Wi-Fi and
+    /// anything on USB, so it reads lower than a socket meter — on an M5 Air, roughly 1–2 W idle
+    /// and 20–26 W with every core busy. That is the honest scope of what is measurable without
+    /// elevated privileges, and it is the number that actually moves when *your* work does.
+    ///
+    /// ## On depending on a private library
+    ///
+    /// `libIOReport.dylib` is not API. It is loaded with `dlopen` and every symbol is resolved
+    /// individually, so if it moves or changes shape the sampler reports "no reading" and the
+    /// gauge draws its empty state — the app does not fail to launch and nothing else is
+    /// affected. That degradation path is the whole reason this is done by hand rather than by
+    /// linking against it.
+    final class PowerSampler {
+        /// Resolved entry points, or `nil` if this system does not provide them.
+        private let io = IOReport()
+        private var subscription: AnyObject?
+        private var channels: CFMutableDictionary?
+        private var previous: (samples: CFDictionary, time: TimeInterval)?
+        /// Set once the library or the channel group turns out to be unavailable, so a machine
+        /// without it stops paying for the attempt on every tick.
+        private var unavailable = false
+
+        /// Watts since the last call, or `nil` on the first call and where unavailable.
+        func sample() -> Double? {
+            guard !unavailable, let io else { unavailable = true; return nil }
+
+            if subscription == nil {
+                guard let group = io.copyChannelsInGroup("Energy Model" as CFString, nil, 0, 0, 0)?
+                    .takeRetainedValue() else {
+                    unavailable = true
+                    return nil
+                }
+                var subscribed: Unmanaged<CFMutableDictionary>?
+                guard let created = io.createSubscription(nil, group, &subscribed, 0, nil)?
+                    .takeRetainedValue() else {
+                    unavailable = true
+                    return nil
+                }
+                subscription = created
+                // The subscription reports on the channels it actually took, which may be a
+                // subset of those asked for; sampling the original set would read nothing.
+                channels = subscribed?.takeRetainedValue() ?? group
+            }
+
+            guard let subscription, let channels,
+                  let current = io.createSamples(subscription, channels, nil)?.takeRetainedValue()
+            else { return nil }
+
+            let now = Date.timeIntervalSinceReferenceDate
+            defer { previous = (current, now) }
+            guard let previous else { return nil }
+
+            let elapsed = now - previous.time
+            guard elapsed > 0.001,
+                  let delta = io.createSamplesDelta(previous.samples, current, nil)?
+                    .takeRetainedValue()
+            else { return nil }
+
+            return joules(in: delta, io: io) / elapsed
+        }
+
+        /// Sums the energy of the three blocks that make up package power.
+        ///
+        /// The channel list is **hierarchical** — `ECPU0…5` roll into `ECPU`, `ECPU` and `PCPU`
+        /// roll into `CPU Energy` — so adding everything up would count the same joules three
+        /// times. One channel is chosen per block, preferring the rolled-up one, and each block
+        /// contributes at most once. Names differ between chip generations, hence the fallbacks.
+        private func joules(in delta: CFDictionary, io: IOReport) -> Double {
+            var cpu: Double?
+            var cpuParts = 0.0
+            var gpu: Double?
+            var gpuFallback: Double?
+            var ane: Double?
+
+            io.iterate(delta) { channel in
+                guard let rawName = io.channelName(channel)?.takeUnretainedValue() as String?
+                else { return 0 }
+                let unit = io.channelUnit(channel)?.takeUnretainedValue() as String? ?? ""
+                let energy = Self.joules(io.integerValue(channel, 0), unit: unit)
+
+                switch rawName {
+                case "CPU Energy": cpu = energy
+                case "ECPU", "PCPU": cpuParts += energy
+                case "GPU Energy": gpu = energy
+                case "GPU": gpuFallback = energy
+                case "ANE", "ANE Energy": ane = energy
+                default: break
+                }
+                return 0
+            }
+
+            return (cpu ?? cpuParts) + (gpu ?? gpuFallback ?? 0) + (ane ?? 0)
+        }
+
+        private static func joules(_ value: Int64, unit: String) -> Double {
+            switch unit {
+            case "nJ": Double(value) / 1e9
+            case "uJ": Double(value) / 1e6
+            case "mJ": Double(value) / 1e3
+            default: Double(value)
+            }
+        }
+    }
+
+    /// The handful of `libIOReport.dylib` entry points the power sampler needs.
+    ///
+    /// Resolved one at a time so a partial match fails cleanly rather than crashing on the first
+    /// call into a symbol that was not there.
+    private struct IOReport {
+        typealias CopyChannelsInGroup =
+            @convention(c) (CFString?, CFString?, UInt64, UInt64, UInt64) -> Unmanaged<CFMutableDictionary>?
+        typealias CreateSubscription =
+            @convention(c) (UnsafeRawPointer?, CFMutableDictionary,
+                            UnsafeMutablePointer<Unmanaged<CFMutableDictionary>?>,
+                            UInt64, CFTypeRef?) -> Unmanaged<AnyObject>?
+        typealias CreateSamples =
+            @convention(c) (AnyObject, CFMutableDictionary, CFTypeRef?) -> Unmanaged<CFDictionary>?
+        typealias CreateSamplesDelta =
+            @convention(c) (CFDictionary, CFDictionary, CFTypeRef?) -> Unmanaged<CFDictionary>?
+        typealias ChannelString = @convention(c) (CFDictionary) -> Unmanaged<CFString>?
+        typealias IntegerValue = @convention(c) (CFDictionary, Int32) -> Int64
+        typealias Iterate =
+            @convention(c) (CFDictionary, @convention(block) (CFDictionary) -> Int32) -> Void
+
+        let copyChannelsInGroup: CopyChannelsInGroup
+        let createSubscription: CreateSubscription
+        let createSamples: CreateSamples
+        let createSamplesDelta: CreateSamplesDelta
+        let channelName: ChannelString
+        let channelUnit: ChannelString
+        let integerValue: IntegerValue
+        let iterate: Iterate
+
+        init?() {
+            guard let handle = dlopen("/usr/lib/libIOReport.dylib", RTLD_LAZY) else { return nil }
+            func symbol<T>(_ name: String, _ type: T.Type) -> T? {
+                guard let pointer = dlsym(handle, name) else { return nil }
+                return unsafeBitCast(pointer, to: type)
+            }
+            guard
+                let a = symbol("IOReportCopyChannelsInGroup", CopyChannelsInGroup.self),
+                let b = symbol("IOReportCreateSubscription", CreateSubscription.self),
+                let c = symbol("IOReportCreateSamples", CreateSamples.self),
+                let d = symbol("IOReportCreateSamplesDelta", CreateSamplesDelta.self),
+                let e = symbol("IOReportChannelGetChannelName", ChannelString.self),
+                let f = symbol("IOReportChannelGetUnitLabel", ChannelString.self),
+                let g = symbol("IOReportSimpleGetIntegerValue", IntegerValue.self),
+                let h = symbol("IOReportIterate", Iterate.self)
+            else { return nil }
+
+            copyChannelsInGroup = a
+            createSubscription = b
+            createSamples = c
+            createSamplesDelta = d
+            channelName = e
+            channelUnit = f
+            integerValue = g
+            iterate = h
+        }
+    }
+
     // MARK: - Network
 
     /// Bytes per second in and out, summed over the machine's real interfaces.

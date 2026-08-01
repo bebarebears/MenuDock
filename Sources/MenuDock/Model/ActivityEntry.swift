@@ -23,6 +23,7 @@ nonisolated fileprivate extension KeyedDecodingContainer {
 nonisolated enum ActivityMetric: String, Codable, Hashable, Sendable, CaseIterable, Identifiable {
     case cpu
     case gpu
+    case power
     case memory
     case networkDown
     case networkUp
@@ -31,10 +32,30 @@ nonisolated enum ActivityMetric: String, Codable, Hashable, Sendable, CaseIterab
 
     var id: String { rawValue }
 
+    /// What a value of this metric means, which decides how it is formatted and scaled.
+    nonisolated enum Unit: Sendable {
+        /// Already 0…1, and 1 is a real ceiling — so gauges are an absolute 0–100%.
+        case percentage
+        /// Bytes per second. Unbounded, so gauges scale themselves against what they have seen.
+        case bytesPerSecond
+        /// Watts. Also unbounded in principle, and wildly different between an Air and a Mac
+        /// Pro, so it scales adaptively too rather than against a guessed maximum.
+        case watts
+    }
+
+    var unit: Unit {
+        switch self {
+        case .cpu, .gpu, .memory: .percentage
+        case .power: .watts
+        case .networkDown, .networkUp, .diskRead, .diskWrite: .bytesPerSecond
+        }
+    }
+
     var displayName: String {
         switch self {
         case .cpu: "CPU"
         case .gpu: "GPU"
+        case .power: "Power"
         case .memory: "Memory"
         case .networkDown: "Network Download"
         case .networkUp: "Network Upload"
@@ -48,6 +69,7 @@ nonisolated enum ActivityMetric: String, Codable, Hashable, Sendable, CaseIterab
         switch self {
         case .cpu: "C"
         case .gpu: "G"
+        case .power: "W"
         case .memory: "M"
         case .networkDown: "↓"
         case .networkUp: "↑"
@@ -60,6 +82,7 @@ nonisolated enum ActivityMetric: String, Codable, Hashable, Sendable, CaseIterab
         switch self {
         case .cpu: "CPU"
         case .gpu: "GPU"
+        case .power: "PWR"
         case .memory: "RAM"
         case .networkDown: "NET ↓"
         case .networkUp: "NET ↑"
@@ -68,13 +91,9 @@ nonisolated enum ActivityMetric: String, Codable, Hashable, Sendable, CaseIterab
         }
     }
 
-    /// Percentages are already 0…1 and need no scaling; rates are unbounded bytes/second and do.
-    var isRate: Bool {
-        switch self {
-        case .cpu, .gpu, .memory: false
-        case .networkDown, .networkUp, .diskRead, .diskWrite: true
-        }
-    }
+    /// Whether this metric needs an adaptive scale. Percentages do not; everything else has no
+    /// natural ceiling to draw against.
+    var isRate: Bool { unit != .percentage }
 
     /// The smallest full-scale value a rate gauge will scale itself to, in bytes/second.
     ///
@@ -86,21 +105,37 @@ nonisolated enum ActivityMetric: String, Codable, Hashable, Sendable, CaseIterab
     var scaleFloor: Double {
         switch self {
         case .cpu, .gpu, .memory: 1
+        // An idle Apple Silicon machine draws 1–2 W and a busy one twenty times that, so a floor
+        // in the middle keeps quiet looking quiet without flattening ordinary work.
+        case .power: 10
         case .networkDown, .networkUp: 1_000_000
         case .diskRead, .diskWrite: 8_000_000
         }
     }
 
-    /// Compact form for the menu bar: `42%`, `1.2M`, `840K`.
+    /// Compact form for the menu bar: `42%`, `1.2M`, `840K`, `21W`.
     func compactString(_ value: Double) -> String {
-        guard isRate else { return "\(Int((value * 100).rounded()))%" }
-        return Self.compactRate(value)
+        switch unit {
+        case .percentage: "\(Int((value * 100).rounded()))%"
+        case .bytesPerSecond: Self.compactRate(value)
+        case .watts: Self.scaled(max(value, 0), "W")
+        }
     }
 
     /// Full form for the click-through menu, where there is room to be unambiguous.
     func verboseString(_ value: Double) -> String {
-        guard isRate else { return String(format: "%.1f%%", value * 100) }
-        return Self.verboseRate(value)
+        switch unit {
+        case .percentage:
+            String(format: "%.1f%%", value * 100)
+        case .bytesPerSecond:
+            Self.verboseRate(value)
+        case .watts:
+            // Two decimals below 10 W, because the interesting range for an idle machine is
+            // fractions of a watt and `2 W` would throw all of it away.
+            value < 10
+                ? String(format: "%.2f W", max(value, 0))
+                : String(format: "%.1f W", value)
+        }
     }
 
     /// The widest string ``compactString(_:)`` can return.
@@ -110,11 +145,17 @@ nonisolated enum ActivityMetric: String, Codable, Hashable, Sendable, CaseIterab
     /// item that breathes in and out once a second drags every icon to its left along with it,
     /// which is far more distracting than a little unused space.
     ///
-    /// Both forms are four characters wide, which is why ``compactString(_:)`` goes to the
+    /// Every form is four characters wide, which is why ``compactString(_:)`` goes to the
     /// trouble of never emitting a fifth: the reserved cell is only as wide as the worst case,
     /// so every character the format can theoretically produce is dead space in every gauge that
     /// never produces it.
-    var widestCompactString: String { isRate ? "999M" : "100%" }
+    var widestCompactString: String {
+        switch unit {
+        case .percentage: "100%"
+        case .bytesPerSecond: "999M"
+        case .watts: "999W"
+        }
+    }
 
     /// Four characters, always.
     ///

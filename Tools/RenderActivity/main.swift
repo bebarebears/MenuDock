@@ -25,6 +25,9 @@ func series(_ kind: ActivityMetric) -> [Double] {
             values.append(0.52 + sin(time * 6) * 0.02)
         case .gpu:
             values.append(max(0, 0.12 + sin(time * 11) * 0.14 + Double.random(in: -0.03...0.03)))
+        case .power:
+            // Idles near 1.5 W and boosts past 20 W under load, like a fanless Apple Silicon Mac.
+            values.append(step > 38 && step < 48 ? Double.random(in: 18...26) : Double.random(in: 1.1...2.6))
         case .networkDown:
             values.append(step > 30 && step < 52 ? Double.random(in: 6e6...1.2e7) : Double.random(in: 0...4e4))
         case .networkUp:

@@ -7,7 +7,7 @@ All notable changes to MenuDock are recorded here. This project follows
 
 ### Added
 - **Activity items** — a live system readout in the menu bar, alongside apps, folders and groups.
-  Shows CPU, GPU, memory, network up/down and disk read/write; each metric is drawn as a graph,
+  Shows CPU, GPU, power draw in watts, memory, network up/down and disk read/write; each is a graph,
   bar, ring or number, with an optional caption, and the item sizes itself to fit whatever is
   configured. Clicking it lists every reading in full and offers Activity Monitor; those readings
   keep updating while the menu is open, on a fixed column so the menu cannot resize under the
@@ -15,6 +15,8 @@ All notable changes to MenuDock are recorded here. This project follows
   Counters are read directly from the kernel (`host_statistics`, `getifaddrs`, IOKit) rather than
   by shelling out, only the metrics actually on screen are sampled, and sampling stops when the
   menu bar is hidden, locked or asleep. A default item costs ~0.18% of one core.
+  Power is SoC package power (CPU + GPU + ANE) from Apple Silicon's IOReport energy
+  accumulators — the counters `powermetrics` reads — and excludes display, SSD and peripherals.
 - `make activity-sheet`, which redraws `docs/images/activity-styles.png` from the renderer itself.
 - Universal (Apple Silicon + Intel) Release builds, packaged as a `.dmg`.
 - GitHub Actions workflows for CI and tag-driven releases.

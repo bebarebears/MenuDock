@@ -196,8 +196,10 @@ private struct GaugeList: View {
     private func add() {
         let used = entry.requiredMetrics
         let metric = ActivityMetric.allCases.first { !used.contains($0) } ?? .cpu
+        // A percentage has a fixed 0–100 range that a graph reads well against; a rate or a
+        // wattage does not, and its actual figure is the useful part.
         let gauge = ActivityGauge(metric: metric,
-                                  style: metric.isRate ? .number : .graph,
+                                  style: metric.unit == .percentage ? .graph : .number,
                                   label: .short)
         entry.gauges.append(gauge)
         selection = gauge.id
