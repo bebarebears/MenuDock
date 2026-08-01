@@ -11,7 +11,7 @@ ICON      := Resources/AppIcon.icns
 BUNDLE_ID := com.bebarebears.MenuDock
 
 .PHONY: all project build run stop install uninstall icon clean reset logs config \
-        release-build dmg
+        release-build dmg showcase activity-sheet
 
 all: build
 
@@ -27,6 +27,16 @@ $(ICON):
 ## Redraw the app icon from Tools/GenerateAppIcon
 icon:
 	@swift Tools/GenerateAppIcon/main.swift
+
+## Redraw docs/images/activity-styles.png — every Activity gauge style, Light and Dark
+activity-sheet:
+	@swiftc -O -swift-version 6 -default-isolation MainActor \
+		Sources/MenuDock/Model/ActivityEntry.swift \
+		Sources/MenuDock/Icons/BitmapCompositor.swift \
+		Sources/MenuDock/Icons/ActivityRenderer.swift \
+		Tools/RenderActivity/main.swift \
+		-o $(DERIVED)/render-activity
+	@$(DERIVED)/render-activity docs/images
 
 ## Redraw the README icon sheets and GIF from the icon-drawing code itself
 showcase:

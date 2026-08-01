@@ -50,8 +50,12 @@ final class GlyphLayer {
     /// Transparent stand-in left in `button.image` so the status item keeps the width it would
     /// have had. `variableLength` derives the item's width from the button's content, so an
     /// image-less button collapses to a sliver.
+    ///
+    /// This is also the whole mechanism behind an Activity item sizing itself: the layer draws
+    /// the gauges, and the spacer — sized by ``ActivityRenderer/size(for:height:)`` — is what
+    /// tells AppKit how much menu bar to reserve for them.
     private var spacer: NSImage?
-    private var spacerSize: Double = 0
+    private var spacerSize: CGSize = .zero
 
     private var installedFrame: CGRect = .zero
     private var installedTint: CGColor?
@@ -73,7 +77,7 @@ final class GlyphLayer {
         tint.isHidden = true
         mask.contents = nil
         spacer = nil
-        spacerSize = 0
+        spacerSize = .zero
     }
 
     var isActive: Bool { !tint.isHidden }
@@ -84,9 +88,10 @@ final class GlyphLayer {
     ///
     /// - Parameters:
     ///   - frame: a rendered glyph, black-on-transparent, used only as a mask.
-    ///   - size: the point size the frame was rendered at.
+    ///   - size: the point size the frame was rendered at. Square for an icon; as wide as it
+    ///     needs to be for an Activity item's row of gauges.
     ///   - isHighlighted: true while the item's menu is open, when the glyph must invert.
-    func show(_ frame: NSImage, size: Double, isHighlighted: Bool) {
+    func show(_ frame: NSImage, size: CGSize, isHighlighted: Bool) {
         guard let button else { return }
 
         // Sharpest representation, not the one `cgImage(forProposedRect:)` guesses from a
@@ -98,10 +103,10 @@ final class GlyphLayer {
 
         let bounds = button.bounds
         let target = CGRect(
-            x: ((bounds.width - size) / 2).rounded(),
-            y: ((bounds.height - size) / 2).rounded(),
-            width: size,
-            height: size
+            x: ((bounds.width - size.width) / 2).rounded(),
+            y: ((bounds.height - size.height) / 2).rounded(),
+            width: size.width,
+            height: size.height
         )
         if target != installedFrame {
             installedFrame = target
@@ -115,7 +120,9 @@ final class GlyphLayer {
             tint.backgroundColor = colour
         }
 
-        mask.contentsScale = Double(rep.pixelsWide) / max(size, 1)
+        // Derived from width, because that is the axis an Activity strip actually varies along;
+        // for a square glyph the two are the same number.
+        mask.contentsScale = Double(rep.pixelsWide) / max(size.width, 1)
         mask.contents = image
         tint.isHidden = false
     }
@@ -144,7 +151,7 @@ final class GlyphLayer {
         return resolved
     }
 
-    private func installSpacerIfNeeded(size: Double, on button: NSStatusBarButton) {
+    private func installSpacerIfNeeded(size: CGSize, on button: NSStatusBarButton) {
         guard spacerSize != size || button.image !== spacer else { return }
         spacerSize = size
         spacer = Self.transparentImage(size: size)
@@ -153,8 +160,8 @@ final class GlyphLayer {
 
     /// A genuinely empty image of an exact size: `NSImage(size:)` alone has no representation,
     /// which some layout paths treat as having nothing to measure.
-    private static func transparentImage(size: Double) -> NSImage {
-        let image = NSImage(size: NSSize(width: size, height: size))
+    private static func transparentImage(size: CGSize) -> NSImage {
+        let image = NSImage(size: size)
         if let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: 1, pixelsHigh: 1,
@@ -163,7 +170,7 @@ final class GlyphLayer {
             colorSpaceName: .deviceRGB,
             bytesPerRow: 0, bitsPerPixel: 0
         ) {
-            rep.size = NSSize(width: size, height: size)
+            rep.size = size
             image.addRepresentation(rep)
         }
         return image

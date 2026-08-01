@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             icons: environment.icons,
             running: environment.running,
             animator: environment.animator,
+            metrics: environment.metrics,
             openSettings: { [weak self] in self?.showSettings() }
         )
 

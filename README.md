@@ -78,6 +78,36 @@ what is running. Right-click for hide, quit and new-window.
   and because they are template images, they take the bar's own tint.</sub>
 </div>
 
+### Watch your machine, without watching Activity Monitor
+
+An **Activity** item is a live readout of the system: CPU, GPU, memory, network up and down, and
+disk read and write. Put as many metrics as you like behind one icon, pick how each one is drawn —
+**graph**, **bar**, **ring** or **number** — and caption them with nothing, a letter, or a word.
+The item sizes itself to whatever you chose; you never set a width.
+
+<div align="center">
+  <img src="docs/images/activity-styles.png" width="880" alt="Every Activity gauge style rendered on a light and a dark menu bar at three sizes">
+  <br>
+  <sub>Every style, at 16 / 18 / 22 pt, in Light and Dark. Drawn as template images like everything
+  else, so they take the menu bar's tint too.</sub>
+</div>
+
+Clicking one lists every reading in full — `11.9 MB/s` rather than the four characters that fit in
+the bar — and opens Activity Monitor if you want the rest.
+
+**It costs almost nothing.** Everything is read straight from the kernel; nothing shells out to
+`top` or `ioreg`. Only the metrics you actually display are sampled, so a CPU-only item never
+touches the GPU or the network. Measured on an M5, Release build, sampling once a second:
+
+| Setup | CPU |
+|---|---|
+| No Activity item | 0.008% of one core |
+| One item, CPU graph + memory bar | **0.18%** |
+| Two items, 8 gauges across 6 metrics | **0.38%** |
+
+Sampling stops completely when the menu bar is hidden by a fullscreen app, when the screen locks
+or sleeps, and when the session is switched away — and the interval doubles in Low Power Mode.
+
 ### 106 built-in icons, drawn rather than shipped
 
 Every glyph is **drawn in code** on a 24 × 24 grid, so it is pixel-exact at any menu bar height,

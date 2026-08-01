@@ -15,6 +15,8 @@ struct ItemDetailView: View {
                     groupEditor
                 case .folder:
                     folderEditor
+                case .activity:
+                    activityEditor
                 }
             }
             .padding(20)
@@ -123,6 +125,60 @@ struct ItemDetailView: View {
 
             SectionBox("Folders to Open") {
                 FolderList(environment: environment, entry: folderBinding)
+            }
+        }
+    }
+
+    // MARK: - Activity
+
+    /// Unlike the other three, this editor has no icon well: an Activity item draws itself from
+    /// live data, so there is no artwork to choose. The size knob those wells carry moves here,
+    /// where it controls the *height* of the gauge strip — the width being the one thing the
+    /// user does not set.
+    @ViewBuilder
+    private var activityEditor: some View {
+        if let activity = item.activity {
+            let activityBinding = Binding<ActivityEntry>(
+                get: { item.activity ?? activity },
+                set: { item.activityEntry = $0 }
+            )
+
+            ActivityEditor(
+                environment: environment,
+                entry: activityBinding,
+                height: item.resolvedIconSize(
+                    default: environment.store.configuration.preferences.iconSize
+                )
+            )
+
+            SectionBox("Height") {
+                HStack {
+                    Slider(
+                        value: Binding(
+                            get: {
+                                item.iconSize
+                                    ?? environment.store.configuration.preferences.iconSize
+                            },
+                            set: { item.iconSize = $0 }
+                        ),
+                        in: 12...IconRenderer.maximumIconSize,
+                        step: 1
+                    )
+                    .frame(width: 200)
+
+                    Text("\(Int(item.resolvedIconSize(default: environment.store.configuration.preferences.iconSize))) pt")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+
+                    if item.iconSize != nil {
+                        Button("Reset") { item.iconSize = nil }
+                            .controlSize(.small)
+                    }
+                }
+                Text("Everything scales with this — graphs, bars, and the size of the numbers.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -412,7 +468,10 @@ private struct ApplicationSummary: View {
 // MARK: - Layout helper
 
 /// Titled block matching the rhythm of native macOS settings panes.
-private struct SectionBox<Content: View>: View {
+///
+/// Not `private`, because ``ActivityEditor`` lives in its own file and must produce the same
+/// vertical rhythm as the editors here — the two are shown in the same pane.
+struct SectionBox<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
 

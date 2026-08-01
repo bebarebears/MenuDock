@@ -29,6 +29,7 @@ final class StatusItemCoordinator {
     private let icons: IconLibrary
     private let running: RunningAppsMonitor
     private let animator: IconAnimator
+    private let metrics: MetricsMonitor
     private let openSettings: () -> Void
 
     /// Keyed for O(1) diffing; ``liveOrder`` carries the arrangement.
@@ -43,12 +44,14 @@ final class StatusItemCoordinator {
         icons: IconLibrary,
         running: RunningAppsMonitor,
         animator: IconAnimator,
+        metrics: MetricsMonitor,
         openSettings: @escaping () -> Void
     ) {
         self.store = store
         self.icons = icons
         self.running = running
         self.animator = animator
+        self.metrics = metrics
         self.openSettings = openSettings
 
         observeAppearanceChanges()
@@ -164,6 +167,7 @@ final class StatusItemCoordinator {
                     icons: icons,
                     running: running,
                     animator: animator,
+                    metrics: metrics,
                     menus: menus
                 )
             }

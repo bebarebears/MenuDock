@@ -105,6 +105,44 @@ struct MenuBuilder {
         return menu
     }
 
+    // MARK: - Activity items
+
+    /// The menu for an Activity item: every gauge's current reading spelled out in full, then a
+    /// way through to the app that shows the rest.
+    ///
+    /// The strip in the menu bar is deliberately terse — four characters for a rate, no units —
+    /// because that is what fits. This is where the terseness gets paid back: `11.9 MB/s` rather
+    /// than `11.9M`, and the metric's real name rather than a one-letter caption.
+    func activityMenu(
+        for entry: ActivityEntry,
+        itemID: DockItem.ID,
+        readings: [ActivityMetric: Double?]
+    ) -> NSMenu {
+        let menu = NSMenu()
+        menu.addHeader(entry.effectiveTitle)
+
+        if entry.gauges.isEmpty {
+            menu.addPlaceholder("No metrics in this item")
+        }
+
+        // Deduplicated, because two gauges may draw the same metric two different ways and one
+        // reading listed twice reads as a bug.
+        var listed: Set<ActivityMetric> = []
+        for gauge in entry.gauges where listed.insert(gauge.metric).inserted {
+            let value = readings[gauge.metric].flatMap { $0 }
+            let text = value.map { gauge.metric.verboseString($0) } ?? "—"
+            menu.addPlaceholder("\(gauge.metric.displayName)   \(text)")
+        }
+
+        menu.addItem(.separator())
+        menu.addAction("Open Activity Monitor") {
+            AppLauncher.openActivityMonitor()
+        }
+
+        appendManagementSection(to: menu, itemID: itemID, removeTitle: "Remove from Menu Bar")
+        return menu
+    }
+
     // MARK: - Folder items
 
     /// Left-click menu for a folder item holding several folders: one row per folder, so the
