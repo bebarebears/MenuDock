@@ -22,7 +22,14 @@ Useful while developing:
 | `make run` | Build and relaunch |
 | `make logs` | Tail `os_log` output |
 | `make config` | Print the current on-disk configuration |
+| `make signing-identity` | One-off: a stable signature, so rebuilds stop revoking macOS permissions |
 | `make reset` | **Deletes your settings and custom icons.** Handy for testing first-run, destructive otherwise |
+
+**If you are working on the clipboard's auto-paste**, run `make signing-identity` first. Builds are
+ad-hoc signed by default, which means macOS pins the Accessibility permission to the binary's
+hash — so every rebuild silently revokes it, while System Settings carries on showing the switch
+as on. The script creates a self-signed certificate once; after that the grant survives builds.
+Nothing else in the app is affected, and CI and fresh clones keep working ad-hoc as before.
 
 ## Before opening a pull request
 

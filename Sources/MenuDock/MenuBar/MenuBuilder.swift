@@ -230,6 +230,54 @@ struct MenuBuilder {
         return (widestName + 26 + widestValue).rounded(.up)
     }
 
+    // MARK: - Clipboard items
+
+    /// Right-click menu for the Clipboard icon. Left-click never reaches here: it drops the
+    /// history panel, which is the item's whole purpose.
+    ///
+    /// Deliberately management only. The history itself lives in the panel — a menu cannot show
+    /// thumbnails, cannot be searched, and cannot be cycled with the shortcut — so duplicating a
+    /// few rows here would create a second, worse way to reach the same thing.
+    func contextMenu(
+        for entry: ClipboardEntry,
+        itemID: DockItem.ID,
+        history: ClipboardHistoryStore,
+        clearHistory: @escaping () -> Void
+    ) -> NSMenu {
+        let menu = NSMenu()
+        menu.addHeader(entry.effectiveTitle)
+
+        let count = history.items.count
+        if count == 0 {
+            menu.addPlaceholder("Nothing copied yet")
+        } else {
+            menu.addPlaceholder(count == 1 ? "1 item stored" : "\(count) items stored")
+        }
+
+        menu.addItem(.separator())
+        menu.addAction("Clear History…") {
+            // Confirmed, because it is the one irreversible thing this item can do and the menu
+            // row sits one slip away from "Remove from Menu Bar".
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = count == 1
+                ? "Delete the 1 item in your clipboard history?"
+                : "Delete all \(count) items in your clipboard history?"
+            alert.informativeText = "This cannot be undone. The Clipboard item stays in your "
+                + "menu bar and carries on recording."
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            // Escape and Return both land on Cancel unless the user goes looking for Delete.
+            alert.buttons.first?.hasDestructiveAction = true
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            clearHistory()
+        }
+        .isEnabled = count > 0
+
+        appendManagementSection(to: menu, itemID: itemID, removeTitle: "Remove from Menu Bar")
+        return menu
+    }
+
     // MARK: - Folder items
 
     /// Left-click menu for a folder item holding several folders: one row per folder, so the

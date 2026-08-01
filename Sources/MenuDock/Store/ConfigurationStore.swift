@@ -122,8 +122,27 @@ final class ConfigurationStore {
         update { $0.items.append(DockItem(kind: .group(GroupEntry(name: name)))) }
     }
 
-    func addActivity() {
-        update { $0.items.append(DockItem(activity: ActivityEntry())) }
+    /// Adds an Activity or Clipboard item, unless one is already in the menu bar.
+    ///
+    /// The guard lives here rather than only in the UI because this is the funnel every caller
+    /// goes through — the + menu, a menu action, a future URL scheme. A UI that merely hides the
+    /// button enforces nothing.
+    @discardableResult
+    func addSingleton(_ kind: DockItem.Kind) -> DockItem.ID? {
+        guard !configuration.contains(singletonLike: kind) else { return nil }
+        let item = DockItem(kind: kind)
+        update { $0.items.append(item) }
+        return item.id
+    }
+
+    @discardableResult
+    func addActivity() -> DockItem.ID? {
+        addSingleton(.activity(ActivityEntry()))
+    }
+
+    @discardableResult
+    func addClipboard() -> DockItem.ID? {
+        addSingleton(.clipboard(ClipboardEntry()))
     }
 
     /// Adds one menu bar item per folder, so selecting four folders in the open panel gives four

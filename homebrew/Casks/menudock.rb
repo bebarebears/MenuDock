@@ -4,7 +4,7 @@ cask "menudock" do
 
   url "https://github.com/bebarebears/MenuDock/releases/download/v#{version}/MenuDock-#{version}.dmg"
   name "MenuDock"
-  desc "Pin apps and folders to the macOS menu bar"
+  desc "Pin apps, folders, system metrics and clipboard history to the macOS menu bar"
   homepage "https://github.com/bebarebears/MenuDock"
 
   livecheck do

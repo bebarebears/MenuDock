@@ -128,6 +128,7 @@ struct MenuBarItemsView: View {
                         .onTapGesture { isShowingAddMenu = false }
 
                     AddItemPopup(
+                        unavailable: unavailableChoices,
                         onChoose: { choice in
                             isShowingAddMenu = false
                             add(choice)
@@ -210,6 +211,15 @@ struct MenuBarItemsView: View {
 
     // MARK: Actions
 
+    /// The choices the configuration already holds one of. Recomputed on every render, so
+    /// removing the Clipboard item re-enables its row without the popup having to be told.
+    private var unavailableChoices: Set<AddItemChoice> {
+        Set(AddItemChoice.allCases.filter { choice in
+            guard let kind = choice.singletonKind else { return false }
+            return store.configuration.contains(singletonLike: kind)
+        })
+    }
+
     private func add(_ choice: AddItemChoice) {
         switch choice {
         case .app:
@@ -220,8 +230,12 @@ struct MenuBarItemsView: View {
             store.addGroup()
             selection = store.configuration.items.last?.id
         case .activity:
-            store.addActivity()
-            selection = store.configuration.items.last?.id
+            // Selecting by the returned id rather than by "the last item" — the store declines to
+            // add a second, and taking the last item regardless would silently move the selection
+            // to whatever happens to sit at the end of the list.
+            if let id = store.addActivity() { selection = id }
+        case .clipboard:
+            if let id = store.addClipboard() { selection = id }
         }
     }
 
@@ -305,6 +319,8 @@ private struct ItemRow: View {
                 }
             case .activity(let entry):
                 countBadge(entry.gauges.count)
+            case .clipboard:
+                countBadge(environment.clipboard.history.items.count)
             }
         }
         .padding(.vertical, 2)

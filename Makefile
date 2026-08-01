@@ -10,8 +10,19 @@ SUPPORT   := $(HOME)/Library/Application Support/MenuDock
 ICON      := Resources/AppIcon.icns
 BUNDLE_ID := com.bebarebears.MenuDock
 
+# Code-signing identity. Ad-hoc ("-") unless `make signing-identity` has been run on this Mac.
+#
+# This matters for one reason: macOS pins a permission grant to the signature it was given to, and
+# an ad-hoc signature is pinned to the *binary hash*. Every rebuild therefore revokes MenuDock's
+# Accessibility permission — silently, with the switch in System Settings still showing as on —
+# and auto-paste stops working with no visible cause. A certificate, even a self-signed one, gives
+# a requirement that is stable across builds. See Scripts/signing-identity.sh.
+SIGN_NAME := MenuDock Developer
+SIGN      := $(shell security find-identity -v -p codesigning 2>/dev/null \
+                     | grep -qF '"$(SIGN_NAME)"' && echo '$(SIGN_NAME)' || echo '-')
+
 .PHONY: all project build run stop install uninstall icon clean reset logs config \
-        release-build dmg showcase activity-sheet
+        release-build dmg showcase activity-sheet signing-identity
 
 all: build
 
@@ -51,8 +62,12 @@ showcase:
 
 build: project
 	@xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) \
-		-derivedDataPath $(DERIVED) build | \
+		-derivedDataPath $(DERIVED) CODE_SIGN_IDENTITY="$(SIGN)" build | \
 		grep -E "(error|warning:|BUILD)" || true
+
+## Create a stable self-signed identity, so rebuilds stop revoking MenuDock's macOS permissions
+signing-identity:
+	@Scripts/signing-identity.sh
 
 ## Build, replace any running copy, and launch
 run: build stop
@@ -81,6 +96,11 @@ uninstall: stop
 # -destination 'generic/platform=macOS' is load-bearing. Without it xcodebuild resolves
 # a concrete "My Mac, arch:arm64" destination and narrows the build to that one slice,
 # silently ignoring ARCHS — you get a green build and an Apple-Silicon-only binary.
+#
+# Deliberately *not* signed with $(SIGN): a release must be byte-identical whoever builds it, and
+# a local self-signed certificate is not something CI or another contributor has. Shipped builds
+# stay ad-hoc until there is a Developer ID to sign them with — which is also what would let a
+# user's Accessibility grant survive a MenuDock update. See project.yml.
 release-build: project
 	@xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration Release \
 		-destination 'generic/platform=macOS' \

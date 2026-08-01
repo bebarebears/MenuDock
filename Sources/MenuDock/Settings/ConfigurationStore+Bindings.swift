@@ -77,4 +77,15 @@ extension DockItem {
             kind = .activity(newValue)
         }
     }
+
+    var clipboardEntry: ClipboardEntry? {
+        get {
+            if case .clipboard(let clipboard) = kind { return clipboard }
+            return nil
+        }
+        set {
+            guard let newValue else { return }
+            kind = .clipboard(newValue)
+        }
+    }
 }

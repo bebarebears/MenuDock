@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             running: environment.running,
             animator: environment.animator,
             metrics: environment.metrics,
+            clipboard: environment.clipboard,
             openSettings: { [weak self] in self?.showSettings() }
         )
 
@@ -60,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Flush any debounced edit that has not hit disk yet.
         environment?.store.saveNow()
+        environment?.clipboard.saveNow()
     }
 
     /// Re-opening the app from Finder or `open -a` should surface Settings, since that is the

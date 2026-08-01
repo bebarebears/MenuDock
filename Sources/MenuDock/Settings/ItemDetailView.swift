@@ -17,6 +17,8 @@ struct ItemDetailView: View {
                     folderEditor
                 case .activity:
                     activityEditor
+                case .clipboard:
+                    clipboardEditor
                 }
             }
             .padding(20)
@@ -126,6 +128,33 @@ struct ItemDetailView: View {
             SectionBox("Folders to Open") {
                 FolderList(environment: environment, entry: folderBinding)
             }
+        }
+    }
+
+    // MARK: - Clipboard
+
+    /// Unlike Activity, this one has an icon well: a Clipboard item is an ordinary menu bar icon
+    /// and picks from the same library as everything else. Only what sits *below* the well is
+    /// particular to it, which is why that part lives in ``ClipboardEditor``.
+    @ViewBuilder
+    private var clipboardEditor: some View {
+        if let clipboard = item.clipboardEntry {
+            let clipboardBinding = Binding<ClipboardEntry>(
+                get: { item.clipboardEntry ?? clipboard },
+                set: { item.clipboardEntry = $0 }
+            )
+
+            SectionBox("Icon") {
+                IconEditor(
+                    environment: environment,
+                    spec: clipboardBinding.icon,
+                    size: $item.iconSize,
+                    app: nil,
+                    defaultBuiltinID: "clipboard"
+                )
+            }
+
+            ClipboardEditor(environment: environment, entry: clipboardBinding)
         }
     }
 

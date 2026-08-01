@@ -15,7 +15,7 @@ settings:
     # actor-isolation noise and makes the few genuinely-background paths obvious.
     SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
     SWIFT_APPROACHABLE_CONCURRENCY: YES
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
     DEAD_CODE_STRIPPING: YES
     CLANG_ENABLE_MODULES: YES
@@ -45,8 +45,16 @@ targets:
         # ad-hoc signature is what lets the binary run at all on Apple Silicon; it is not
         # a Developer ID, so a downloaded build is quarantined until the user allows it
         # once (see README) or installs via Homebrew with --no-quarantine.
-        # To ship notarised builds instead: set a Developer ID identity here, flip
+        #
+        # It has one sharp edge. macOS pins a permission grant to the signature it was
+        # granted to, and an ad-hoc signature has no certificate to pin — so it pins the
+        # binary's cdhash, which changes on every single build. The Accessibility
+        # permission auto-paste needs is therefore revoked by every rebuild and every
+        # update, silently, while System Settings still shows the switch as on. Locally,
+        # `make signing-identity` fixes that with a stable self-signed certificate. For
+        # shipped builds only a Developer ID does: set the identity here, flip
         # ENABLE_HARDENED_RUNTIME to YES, and add the notarytool step to release.yml.
+        # Overridden per-build by the Makefile; see SIGN there.
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO

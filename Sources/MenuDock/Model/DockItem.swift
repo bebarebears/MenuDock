@@ -125,6 +125,32 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
         case group(GroupEntry)
         case folder(FolderEntry)
         case activity(ActivityEntry)
+        case clipboard(ClipboardEntry)
+
+        /// Kinds that may appear **at most once** in the menu bar.
+        ///
+        /// Both of these are single system-wide facilities rather than pointers at something the
+        /// user chose: a second Activity item would sample the same counters twice and a second
+        /// Clipboard item would watch the same pasteboard into a second history, competing for
+        /// the same keyboard shortcut. Neither has a coherent meaning, so the limit is enforced
+        /// rather than merely discouraged — in the Add menu, in the store, and on decode.
+        var isSingleton: Bool {
+            switch self {
+            case .application, .group, .folder: false
+            case .activity, .clipboard: true
+            }
+        }
+
+        /// Identity for singleton enforcement: two kinds collide when both are singletons of the
+        /// same case. Compared on this rather than on the whole value, which carries the user's
+        /// settings and so is never equal between two items.
+        var singletonToken: String? {
+            switch self {
+            case .application, .group, .folder: nil
+            case .activity: "activity"
+            case .clipboard: "clipboard"
+            }
+        }
     }
 
     private enum CodingKeys: String, CodingKey { case id, kind, iconSize }
@@ -145,6 +171,10 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
 
     init(activity: ActivityEntry = ActivityEntry()) {
         self.init(kind: .activity(activity))
+    }
+
+    init(clipboard: ClipboardEntry = ClipboardEntry()) {
+        self.init(kind: .clipboard(clipboard))
     }
 
     init(from decoder: Decoder) throws {
@@ -183,6 +213,7 @@ nonisolated extension DockItem.Kind {
             case .application(let entry): entry.icon
             case .group(let group): group.icon
             case .folder(let folder): folder.icon
+            case .clipboard(let clipboard): clipboard.icon
             case .activity: .symbol("waveform.path.ecg")
             }
         }
@@ -197,6 +228,9 @@ nonisolated extension DockItem.Kind {
             case .folder(var folder):
                 folder.icon = newValue
                 self = .folder(folder)
+            case .clipboard(var clipboard):
+                clipboard.icon = newValue
+                self = .clipboard(clipboard)
             case .activity:
                 break
             }
@@ -211,6 +245,7 @@ nonisolated extension DockItem {
         case .group(let group): group.name
         case .folder(let folder): folder.effectiveTitle
         case .activity(let activity): activity.effectiveTitle
+        case .clipboard(let clipboard): clipboard.effectiveTitle
         }
     }
 
@@ -224,7 +259,7 @@ nonisolated extension DockItem {
         switch kind {
         case .application(let entry): [entry.app]
         case .group(let group): group.members.map(\.app)
-        case .folder, .activity: []
+        case .folder, .activity, .clipboard: []
         }
     }
 
@@ -237,6 +272,8 @@ nonisolated extension DockItem {
             ([group.icon.customFileName] + group.members.map(\.icon.customFileName)).compactMap { $0 }
         case .folder(let folder):
             [folder.icon.customFileName].compactMap { $0 }
+        case .clipboard(let clipboard):
+            [clipboard.icon.customFileName].compactMap { $0 }
         case .activity:
             []
         }
@@ -257,9 +294,20 @@ nonisolated extension DockItem {
         return false
     }
 
+    var isClipboard: Bool {
+        if case .clipboard = kind { return true }
+        return false
+    }
+
     /// The entry behind an activity item, or `nil` for every other kind.
     var activity: ActivityEntry? {
         if case .activity(let entry) = kind { return entry }
+        return nil
+    }
+
+    /// The entry behind a clipboard item, or `nil` for every other kind.
+    var clipboard: ClipboardEntry? {
+        if case .clipboard(let entry) = kind { return entry }
         return nil
     }
 
@@ -277,8 +325,12 @@ nonisolated extension DockItem {
 // MARK: - Codable
 
 nonisolated extension DockItem.Kind: Codable {
-    private enum CodingKeys: String, CodingKey { case type, entry, group, folder, activity }
-    private enum Discriminator: String, Codable { case application, group, folder, activity }
+    private enum CodingKeys: String, CodingKey {
+        case type, entry, group, folder, activity, clipboard
+    }
+    private enum Discriminator: String, Codable {
+        case application, group, folder, activity, clipboard
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -291,6 +343,8 @@ nonisolated extension DockItem.Kind: Codable {
             self = .folder(try container.decode(FolderEntry.self, forKey: .folder))
         case .activity:
             self = .activity(try container.decode(ActivityEntry.self, forKey: .activity))
+        case .clipboard:
+            self = .clipboard(try container.decode(ClipboardEntry.self, forKey: .clipboard))
         }
     }
 
@@ -309,6 +363,9 @@ nonisolated extension DockItem.Kind: Codable {
         case .activity(let activity):
             try container.encode(Discriminator.activity, forKey: .type)
             try container.encode(activity, forKey: .activity)
+        case .clipboard(let clipboard):
+            try container.encode(Discriminator.clipboard, forKey: .type)
+            try container.encode(clipboard, forKey: .clipboard)
         }
     }
 }

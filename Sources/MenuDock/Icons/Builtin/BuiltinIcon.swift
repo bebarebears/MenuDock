@@ -72,7 +72,7 @@ struct BuiltinIcon: Identifiable {
     }
 }
 
-/// The complete built-in set: 78 static glyphs plus 28 animated ones.
+/// The complete built-in set: 79 static glyphs plus 28 animated ones.
 @MainActor
 enum BuiltinIconCatalog {
 

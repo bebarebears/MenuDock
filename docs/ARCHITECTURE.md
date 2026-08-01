@@ -26,7 +26,10 @@ Sources/MenuDock/
 │   ├── FolderReference.swift      relocation-tolerant pointer to a folder
 │   ├── IconSpec.swift             appIcon | symbol | builtin | custom(file, renderingMode)
 │   ├── ActivityEntry.swift        gauges: metric x style x caption, + refresh interval
-│   ├── DockItem.swift             one status item: .application, .group, .folder or .activity
+│   ├── ClipboardEntry.swift       retention, capture rules, shortcut + auto-paste prefs
+│   ├── ClipboardItem.swift        one captured copy: metadata only, payload on disk
+│   ├── DockItem.swift             one status item: .application, .group, .folder,
+│   │                              .activity or .clipboard (the last two, one each)
 │   └── Configuration.swift        the on-disk document + schemaVersion
 ├── Store/
 │   ├── ConfigurationStore.swift   @Observable source of truth, debounced atomic writes
@@ -37,7 +40,11 @@ Sources/MenuDock/
 │   ├── InstalledAppsIndex.swift   background scan of /Applications for the picker
 │   ├── SystemMetrics.swift        kernel counters: CPU, memory, GPU, network, disk
 │   ├── MetricsMonitor.swift       one timer, demand-gated samplers, history windows
-│   └── DisplayActivityMonitor.swift  can anyone see the menu bar? (shared by both timers)
+│   ├── DisplayActivityMonitor.swift  can anyone see the menu bar? (shared by every timer)
+│   ├── ClipboardHistoryStore.swift   JSON index + one payload file per item
+│   ├── ClipboardMonitor.swift     changeCount polling, type routing, privacy filters
+│   ├── ClipboardPaster.swift      focus handover, and the one Accessibility-gated keystroke
+│   └── GlobalHotKey.swift         Carbon RegisterEventHotKey — no permission needed
 ├── Icons/
 │   ├── ImageAnalysis.swift        saturation-based monochrome detection
 │   ├── BitmapCompositor.swift     multi-scale bitmap packing, shared by both renderers
@@ -46,7 +53,7 @@ Sources/MenuDock/
 │   └── Builtin/
 │       ├── Pen.swift              drawing primitives on a 24x24 y-down grid
 │       ├── BuiltinIcon.swift      catalogue entry + phase/frame maths + frame cache
-│       ├── StaticIcons.swift      78 category glyphs
+│       ├── StaticIcons.swift      79 category glyphs
 │       ├── AnimatedIcons.swift    28 gently animated glyphs
 │       └── IconAnimator.swift     one shared timer for every animated item
 ├── MenuBar/
@@ -54,10 +61,14 @@ Sources/MenuDock/
 │   ├── StatusItemController.swift   owns one NSStatusItem, routes clicks
 │   ├── GlyphLayer.swift             animates without redrawing the status item
 │   ├── MenuBuilder.swift            builds NSMenus from live state
-│   └── MenuAction.swift             closure-backed menu items
+│   ├── MenuAction.swift             closure-backed menu items
+│   ├── ClipboardCoordinator.swift   the one switch: item present -> polling + hotkey
+│   ├── ClipboardPanel.swift         the dropdown's NSPanel, keys, and ⌘⇧V cycling
+│   └── ClipboardPanelView.swift     the dropdown's SwiftUI contents
 └── Settings/                      SwiftUI, hosted in a plain NSWindow
     ├── AddItemPopup.swift         the + menu, drawn inside the window
-    └── ActivityEditor.swift       gauge list + a preview that is the real renderer
+    ├── ActivityEditor.swift       gauge list + a preview that is the real renderer
+    └── ClipboardEditor.swift      retention, capture rules, shortcut, permission state
 
 Tools/GenerateAppIcon/           draws Resources/AppIcon.icns (`make icon`)
 Tools/RenderActivity/            draws docs/images/activity-styles.png (`make activity-sheet`)
@@ -65,7 +76,7 @@ Tools/RenderActivity/            draws docs/images/activity-styles.png (`make ac
 
 ---
 
-## The eight decisions that shape everything
+## The ten decisions that shape everything
 
 ### 1. One `NSStatusItem` per entry, reconciled by identity — and the list is the order
 
@@ -194,7 +205,7 @@ Only the running-dot path rasterises, and it emits explicit 1× and 2× bitmaps.
 
 ### 6. Built-in icons are drawn, not shipped
 
-106 icons — 78 static category glyphs and 28 animated — defined as code on a 24 × 24 y-down grid
+107 icons — 79 static category glyphs and 28 animated — defined as code on a 24 × 24 y-down grid
 with a shared 1.9-unit stroke system. Drawing them procedurally means they are pixel-exact at any
 menu bar height, weigh a few hundred bytes each, and — for the animated ones — can be evaluated at
 an arbitrary phase rather than baked into a filmstrip. All are monochrome by construction, so
@@ -286,6 +297,65 @@ numeric gauge is measured from the widest string its metric can produce, which i
 rounding *before* choosing the unit, since formatting 9,999,999 B/s by magnitude first yields
 `10.0M` and overflows a cell measured for four. A status item that changes width once a second
 drags every icon to its left along with it.
+
+### 9. Clipboard: the item *is* the switch, and the permission is one keystroke wide
+
+Whether MenuDock reads your pasteboard is decided by one thing — is there a Clipboard item in the
+menu bar? `ClipboardCoordinator` observes the configuration and nothing else; with no such item
+there is no timer, no hot key, and no code from the subsystem running at all. That is deliberately
+a property a user can verify by deleting the item, rather than a promise in a settings pane.
+
+**Polling, because `NSPasteboard` posts no notification.** There is no API for it and never has
+been; every clipboard manager on the platform reads `changeCount`, which is one integer. Twice a
+second beats the user to ⌘V and is invisible in a power profile. It stops with the screen, through
+the same `DisplayActivityMonitor` the other two timers use.
+
+> **The bug worth recording:** putting an item *back* on the pasteboard has to be excluded from
+> capture, and the obvious spelling — reserve `changeCount + 1` before the poll sees it — is off by
+> one, because writing to the pasteboard has *already* advanced the count. The result is a double
+> failure that hides itself: the put-back is filed as a fresh copy, **and** the user's next real
+> copy is silently swallowed under the reserved number. It is now recorded *after* the write, as
+> the count that exists.
+
+**Metadata in the index, bytes on disk.** The index is read at launch and rewritten on every
+capture, so it holds only what a list row needs. Payloads live in files named from the item's
+UUID. Copying a 20 MB screenshot therefore does not make every subsequent copy rewrite 20 MB —
+and file items store *paths*, never copies, so a 4 GB video on the clipboard costs its filename.
+
+**Reading the pasteboard is a judgement call, not a lookup.** One copy puts several
+representations up at once. Files are checked first because a Finder copy also carries the path as
+a string; text next, because a rich copy can carry an inline image nobody meant to single out;
+images are what is left. The one refinement is that a lone bare URL beside image data is *not*
+text — that is Safari's "Copy Image", and treating it as text drops the picture.
+
+**The panel activates the app, and that is the right trade.** A non-activating panel keeps your
+app frontmost and looks tidier — and cannot receive a keystroke without Accessibility permission,
+because reading keys bound for another app is precisely what that permission gates. Search, arrows
+and cycling would all be dead until the user had visited System Settings. So the panel takes
+focus, remembers what was frontmost, and hands it back. Only the final synthesised ⌘V needs the
+permission, and without it the feature degrades to "copied, and you press ⌘V" rather than to
+nothing.
+
+The ⌘⇧V *cycling* gesture leans on two things worth naming. The hot key comes from Carbon's
+`RegisterEventHotKey` — deprecated-looking, still the only way to claim one combination without
+Accessibility — and its handler stays on the main actor via `assumeIsolated` rather than hopping
+through a `Task`, because a panel that appears a run loop turn after the keystroke feels broken.
+Releasing the modifiers pastes only if V was tapped *more than once*: one tap means "show me", and
+that distinction is the whole reason the gesture can double as a browser.
+
+### 10. Two kinds are limited to one each
+
+Activity and Clipboard are single system-wide facilities, not pointers at something the user
+chose. A second Activity item would sample the same counters twice; a second Clipboard item would
+watch the same pasteboard into a second history and fight over the same shortcut.
+
+The rule is enforced at three levels, and the third is the one that matters: `AddItemPopup` shows
+the row ticked off rather than hiding it, `ConfigurationStore.addSingleton` refuses, and
+`Configuration.init(from:)` collapses duplicates on decode. Only the last covers a configuration
+file that arrives with two — hand-edited, merged between Macs, or written by a build that predates
+the rule — which is exactly the case the UI cannot see. It keeps the *leftmost*, because this
+array is also the menu bar's order and promoting the other would move a familiar icon for no
+visible reason.
 
 ## Installing, and the app icon
 

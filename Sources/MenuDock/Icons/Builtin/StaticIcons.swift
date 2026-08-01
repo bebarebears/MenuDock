@@ -110,7 +110,7 @@ enum StaticIcons {
         },
     ]
 
-    // MARK: - Productivity (6)
+    // MARK: - Productivity (8)
 
     static let productivity: [BuiltinIcon] = [
         BuiltinIcon("note", "Notes", .productivity) { pen, _ in
@@ -149,6 +149,16 @@ enum StaticIcons {
 
         BuiltinIcon("folder", "Folder", .productivity) { pen, _ in
             pen.poly([(3, 19.4), (3, 5.4), (9.4, 5.4), (11.6, 8.2), (21, 8.2), (21, 19.4)], closed: true)
+        },
+
+        BuiltinIcon("clipboard", "Clipboard", .productivity) { pen, _ in
+            // The default for the Clipboard item. A board with a clip is the one shape that reads
+            // as "clipboard" and not as "document" at 18pt, and the clip has to break the board's
+            // top edge to do it — a clip drawn *inside* the outline is just a small rectangle.
+            pen.rrect(4.6, 4.4, 14.8, 16.6, 2.4)
+            pen.rrect(8.6, 2.6, 6.8, 4.0, 1.3)
+            pen.with(width: 1.5).line(8.4, 11.6, 15.6, 11.6)
+            pen.with(width: 1.5).line(8.4, 15.4, 13.4, 15.4)
         },
 
         BuiltinIcon("archive", "Archive", .productivity) { pen, _ in

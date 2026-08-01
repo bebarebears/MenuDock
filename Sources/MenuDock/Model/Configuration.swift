@@ -32,6 +32,26 @@ nonisolated struct Configuration: Codable, Hashable, Sendable {
         items = try container.decodeIfPresent([DockItem].self, forKey: .items) ?? []
         preferences = try container.decodeIfPresent(Preferences.self, forKey: .preferences)
             ?? Preferences()
+
+        // The last line of defence for the one-of-each rule. Settings and the store both refuse
+        // to create a second Activity or Clipboard item, but the configuration is a plain JSON
+        // file the user is invited to hand-edit and back up — and a config copied between Macs,
+        // merged by hand, or written by an older build can still arrive with two. Collapsing here
+        // means every path into the model upholds the invariant, so nothing downstream has to ask.
+        collapseDuplicateSingletons()
+    }
+
+    /// Drops all but the first item of each singleton kind, in place.
+    ///
+    /// Keeps the *first* rather than the newest because this array is also the menu bar's order:
+    /// the leftmost of two Activity items is the one the user has been looking at, and silently
+    /// promoting the other would move a familiar icon for no visible reason.
+    private mutating func collapseDuplicateSingletons() {
+        var seen: Set<String> = []
+        items.removeAll { item in
+            guard let token = item.kind.singletonToken else { return false }
+            return !seen.insert(token).inserted
+        }
     }
 
     nonisolated struct Preferences: Codable, Hashable, Sendable {
@@ -67,4 +87,15 @@ nonisolated extension Configuration {
     func index(of id: DockItem.ID) -> Int? {
         items.firstIndex { $0.id == id }
     }
+
+    /// Whether a singleton kind is already in the menu bar. Drives both the store's refusal to
+    /// add a second and the Add menu's disabled rows — one predicate, so the button cannot offer
+    /// something the store will then decline to do.
+    func contains(singletonLike kind: DockItem.Kind) -> Bool {
+        guard let token = kind.singletonToken else { return false }
+        return items.contains { $0.kind.singletonToken == token }
+    }
+
+    var activityItem: DockItem? { items.first(where: \.isActivity) }
+    var clipboardItem: DockItem? { items.first(where: \.isClipboard) }
 }
