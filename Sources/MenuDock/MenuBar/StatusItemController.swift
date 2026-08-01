@@ -19,6 +19,7 @@ final class StatusItemController {
     private let running: RunningAppsMonitor
     private let animator: IconAnimator
     private let metrics: MetricsMonitor
+    private let clipboard: ClipboardCoordinator
     private let menus: MenuBuilder
 
     private var item: DockItem
@@ -96,6 +97,7 @@ final class StatusItemController {
         running: RunningAppsMonitor,
         animator: IconAnimator,
         metrics: MetricsMonitor,
+        clipboard: ClipboardCoordinator,
         menus: MenuBuilder
     ) {
         self.id = item.id
@@ -105,6 +107,7 @@ final class StatusItemController {
         self.running = running
         self.animator = animator
         self.metrics = metrics
+        self.clipboard = clipboard
         self.menus = menus
 
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -121,8 +124,19 @@ final class StatusItemController {
         resolveRenderState()
         updateAnimationSubscription()
         updateMetricsSubscription()
+        registerClipboardAnchor()
         observeOcclusion()
         refresh()
+    }
+
+    /// Tells the clipboard coordinator where this icon is, so ⌘⇧V can drop the panel from it
+    /// rather than from a corner of the screen.
+    ///
+    /// Weakly captured, so a controller torn down by a menu bar rebuild simply stops answering
+    /// and its replacement takes over — the coordinator never holds a status item alive.
+    private func registerClipboardAnchor() {
+        guard item.isClipboard else { return }
+        clipboard.setAnchorProvider { [weak self] in self?.statusItem.button?.window?.frame }
     }
 
     /// `isolated` so the status item — main-actor-only, and not `Sendable` — can be removed
@@ -157,6 +171,7 @@ final class StatusItemController {
         resolveRenderState()
         updateAnimationSubscription()
         updateMetricsSubscription()
+        registerClipboardAnchor()
         applyImage()
         updateLabels()
     }
@@ -519,6 +534,16 @@ final class StatusItemController {
             }
             return readings.isEmpty ? title : ([title] + readings).joined(separator: "\n")
 
+        case .clipboard(let entry):
+            // The count is the one fact worth a tooltip: it says at a glance whether the history
+            // is recording, which is otherwise invisible until the panel is opened.
+            let count = clipboard.history.items.count
+            let summary = count == 0
+                ? "Nothing copied yet"
+                : (count == 1 ? "1 item" : "\(count) items")
+            let shortcut = entry.hotkeyEnabled ? " · \(GlobalHotKey.recallDisplayName)" : ""
+            return "\(title) — \(summary)\(shortcut)"
+
         case .application, .group:
             return isRunning ? "\(title) — Running" : title
         case .folder(let entry):
@@ -547,7 +572,7 @@ final class StatusItemController {
             return running.isRunning(entry.app.bundleIdentifier)
         case .group(let group):
             return group.members.contains { running.isRunning($0.app.bundleIdentifier) }
-        case .folder, .activity:
+        case .folder, .activity, .clipboard:
             return false
         }
     }
@@ -616,6 +641,19 @@ final class StatusItemController {
                     readings[gauge.metric] = metrics.latest(for: gauge.metric)
                 }
             ))
+
+        case .clipboard(let entry):
+            if wantsContextMenu {
+                present(menus.contextMenu(for: entry, itemID: id, history: clipboard.history) {
+                    [clipboard] in clipboard.history.clear()
+                })
+            } else {
+                // The dropdown is a panel rather than an `NSMenu`, so it is presented directly
+                // instead of through `present(_:)` — thumbnails, a search field and two-line rows
+                // are not things an `NSMenu` row can be made to do without custom views for
+                // every entry, and those bring their own hit-testing and highlight bugs.
+                clipboard.toggle(anchor: statusItem.button?.window?.frame)
+            }
 
         case .folder(let entry):
             if wantsContextMenu {

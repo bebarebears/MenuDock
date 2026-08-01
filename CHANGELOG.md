@@ -6,6 +6,28 @@ All notable changes to MenuDock are recorded here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Clipboard items** — a searchable history of what you copy, in the menu bar. Records text
+  (with RTF alongside it, so one row pastes formatted into Pages and plain into a terminal),
+  images, and files. Click the icon or press ⌘⇧V to drop the history from it; arrow through it and
+  press Return, use ⌘1–⌘9, or hold ⌘⇧ and tap V to walk the list and release to paste — the ⌘-Tab
+  gesture. Retention (1 hour to forever), an item ceiling, and per-type capture toggles are all in
+  Settings, alongside the icon picker every other item has.
+  Copied files are stored by path and never duplicated; images are stored once as PNG with a
+  thumbnail. Items apps mark `org.nspasteboard.ConcealedType` — what password managers set — are
+  skipped by default, as are transient ones. Nothing is polled at all unless a Clipboard item is
+  in the menu bar.
+  Opening, searching, cycling and copying need no permission; only pasting *for* you does, since
+  macOS gates synthesised keystrokes behind Accessibility. Without it, choosing an item copies it
+  and returns you to your app.
+- A `clipboard` built-in glyph, bringing the set to 107.
+- MenuDock now explains a refused auto-paste instead of doing nothing visible. macOS ties an
+  Accessibility grant to the exact copy of the app it was given to, so rebuilding or updating
+  MenuDock invalidates it *while System Settings still shows the switch as on* — and the usual
+  remedy is a no-op, because macOS only raises its permission prompt when it has no entry for the
+  app at all. The first refused paste of a launch now says what has happened and offers System
+  Settings, the Recall pane distinguishes "never granted" from "granted to an earlier build" and
+  reflects the live state rather than a stale snapshot, and `make signing-identity` creates a
+  stable self-signed certificate so local rebuilds stop revoking the permission at all.
 - **Activity items** — a live system readout in the menu bar, alongside apps, folders and groups.
   Shows CPU, GPU, power draw in watts, memory, network up/down and disk read/write; each is a graph,
   bar, ring or number, with an optional caption, and the item sizes itself to fit whatever is
@@ -23,6 +45,9 @@ All notable changes to MenuDock are recorded here. This project follows
 - Homebrew cask, installable from `bebarebears/tap`.
 
 ### Changed
+- Activity and Clipboard items are limited to one each. The + menu shows the row ticked off
+  rather than hiding it, the store refuses a second, and a configuration file that somehow
+  contains two — hand-edited, or merged between Macs — keeps the leftmost on load.
 - Screen sleep, fast user switching, lock state and Low Power Mode are now tracked once, by
   `DisplayActivityMonitor`, and shared by the icon animator and the metrics sampler instead of
   being observed separately by each.

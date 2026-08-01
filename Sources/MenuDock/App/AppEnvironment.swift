@@ -13,6 +13,7 @@ final class AppEnvironment {
     let display: DisplayActivityMonitor
     let animator: IconAnimator
     let metrics: MetricsMonitor
+    let clipboard: ClipboardCoordinator
     let installedApps: InstalledAppsIndex
 
     /// `display` is constructed first and injected into the two timer-driven services, so both
@@ -25,6 +26,7 @@ final class AppEnvironment {
         display: DisplayActivityMonitor = DisplayActivityMonitor(),
         animator: IconAnimator? = nil,
         metrics: MetricsMonitor? = nil,
+        clipboard: ClipboardCoordinator? = nil,
         installedApps: InstalledAppsIndex = InstalledAppsIndex()
     ) {
         self.store = store
@@ -33,6 +35,9 @@ final class AppEnvironment {
         self.display = display
         self.animator = animator ?? IconAnimator(display: display)
         self.metrics = metrics ?? MetricsMonitor(display: display)
+        // Takes the store as well as the display monitor: whether the pasteboard is watched at
+        // all is a question about the configuration, not about the screen.
+        self.clipboard = clipboard ?? ClipboardCoordinator(store: store, display: display)
         self.installedApps = installedApps
     }
 }

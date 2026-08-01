@@ -71,6 +71,10 @@ what is running. Right-click for hide, quit and new-window.
 
 **Group things.** Put several apps behind one icon and they become a dropdown menu.
 
+Apps, folders and groups can be added as often as you like. **Activity and Clipboard are one
+each** — a second of either would sample the same counters or watch the same pasteboard twice, so
+the + menu shows them ticked off once you have one.
+
 <div align="center">
   <img src="docs/images/menu-bar.png" width="880" alt="A full macOS menu bar, with seven MenuDock items sitting between the app menus and the system status items">
   <br>
@@ -120,15 +124,52 @@ touches the GPU or the network. Measured on an M5, Release build, sampling once 
 Sampling stops completely when the menu bar is hidden by a fullscreen app, when the screen locks
 or sleeps, and when the session is switched away — and the interval doubles in Low Power Mode.
 
-### 106 built-in icons, drawn rather than shipped
+### Everything you copied, one shortcut away
+
+A **Clipboard** item remembers what you copy — text, images, and files — and hands any of it back.
+Click the icon, or press **⌘⇧V** anywhere, and the history drops from the icon: search it, arrow
+through it, and press Return. Or do it without ever looking: **hold ⌘⇧ and tap V** to walk down
+the list, then let go to paste what you landed on, exactly the way ⌘-Tab works.
+
+Pick any icon in the library for it, the same as any other item.
+
+**What it keeps is up to you.** Choose how long — an hour, a day, a week, 30 days, or until you
+clear it — and a ceiling on how many items to hold. Turn off text, images or files individually,
+or all three to pause recording without losing what you already have.
+
+**Copied files are recorded by path, never duplicated,** so putting a 4 GB video on the clipboard
+costs the length of its filename. Images are stored once as PNG with a small thumbnail beside
+them for the list.
+
+**On privacy.** Password managers flag what they copy with the standard `ConcealedType` marker,
+and MenuDock skips those by default — as it does items apps mark transient. Nothing is recorded at
+all unless a Clipboard item is in your menu bar: no item, no polling, no history, which is a claim
+you can check by removing it. Everything stays on your Mac, in
+`~/Library/Application Support/MenuDock/Clipboard`, and *Clear History* deletes the bytes rather
+than filing them somewhere else.
+
+**One permission, for one keystroke.** Opening the history, searching it, cycling it and copying
+from it all work with no permission whatsoever. Only *pasting for you* — pressing ⌘V in another
+app on your behalf — needs Accessibility, because macOS does not let any app synthesise keystrokes
+without it. Without it granted, choosing an item copies it and returns you to your app; you press
+⌘V. It is one keypress, not the feature.
+
+> **If auto-paste stops working after an update**, the permission has gone stale rather than been
+> lost. macOS ties an Accessibility grant to the exact copy of the app it was given to, and
+> MenuDock is not signed with a Developer ID, so a new version is a different app as far as the
+> permission is concerned — the switch in **Privacy & Security › Accessibility** still shows as on
+> while the grant no longer applies. Switch it off and on again, or remove MenuDock with **–** and
+> add it back with **+**. MenuDock says so itself the first time a paste is refused.
+
+### 107 built-in icons, drawn rather than shipped
 
 Every glyph is **drawn in code** on a 24 × 24 grid, so it is pixel-exact at any menu bar height,
 weighs a few hundred bytes, and tints itself for Light and Dark mode automatically.
 
 <div align="center">
-  <img src="docs/images/icons-static.png" width="880" alt="All 78 static built-in glyphs">
+  <img src="docs/images/icons-static.png" width="880" alt="All 79 static built-in glyphs">
   <br>
-  <sub>78 static glyphs, across 12 categories.</sub>
+  <sub>79 static glyphs, across 12 categories.</sub>
 </div>
 
 Another 28 are **gently animated** — and gently is the point. Periods run 2.2–4.5 seconds, eased

@@ -6,6 +6,7 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
     case folder
     case group
     case activity
+    case clipboard
 
     var id: String { rawValue }
 
@@ -15,6 +16,7 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
         case .folder: "Add Folder"
         case .group: "Add Group"
         case .activity: "Add Activity"
+        case .clipboard: "Add Clipboard"
         }
     }
 
@@ -24,6 +26,7 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
         case .folder: "Opens in Finder"
         case .group: "Several apps, one icon"
         case .activity: "Live CPU, memory, network"
+        case .clipboard: "Everything you copy, recallable"
         }
     }
 
@@ -33,8 +36,25 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
         case .folder: "folder"
         case .group: "rectangle.stack"
         case .activity: "waveform.path.ecg"
+        case .clipboard: "doc.on.clipboard"
         }
     }
+
+    /// The kind this choice would create, for the choices that create one outright.
+    ///
+    /// Only the singleton kinds have one, and only so the popup can ask the configuration
+    /// whether it already holds one — the others open a picker and cannot be answered in advance.
+    var singletonKind: DockItem.Kind? {
+        switch self {
+        case .app, .folder, .group: nil
+        case .activity: .activity(ActivityEntry())
+        case .clipboard: .clipboard(ClipboardEntry())
+        }
+    }
+
+    /// Replaces ``detail`` on a row that cannot be chosen, so the row explains itself instead of
+    /// being greyed out for no stated reason.
+    static let alreadyAddedDetail = "Already in your menu bar"
 }
 
 /// The + button's menu, drawn **inside** the settings window.
@@ -50,6 +70,10 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
 /// opens upward from the button. The cost is that keyboard handling and dismissal have to be
 /// written by hand; the gain is a popup that always sits inside its own window.
 struct AddItemPopup: View {
+    /// Choices already in the menu bar. Shown, but not choosable — hiding them instead would
+    /// make the menu's contents change shape between openings, and leave a user who wonders where
+    /// "Add Clipboard" went with nothing to read.
+    var unavailable: Set<AddItemChoice> = []
     var onChoose: (AddItemChoice) -> Void
     var onDismiss: () -> Void
 
@@ -95,35 +119,49 @@ struct AddItemPopup: View {
     }
 
     private func row(_ choice: AddItemChoice) -> some View {
-        Button {
+        let isDisabled = unavailable.contains(choice)
+        // A disabled row must not highlight on hover: an accent-filled row that does nothing when
+        // clicked reads as a bug rather than as a limit.
+        let isHighlighted = hovered == choice && !isDisabled
+
+        return Button {
             onChoose(choice)
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: choice.symbolName)
                     .font(.system(size: 12.5))
                     .frame(width: 18)
-                    .foregroundStyle(hovered == choice ? .white : .secondary)
+                    .foregroundStyle(isHighlighted ? .white : .secondary)
 
                 VStack(alignment: .leading, spacing: 0) {
                     Text(choice.title)
                         .font(.system(size: 13))
-                    Text(choice.detail)
+                    Text(isDisabled ? AddItemChoice.alreadyAddedDetail : choice.detail)
                         .font(.system(size: 10.5))
-                        .foregroundStyle(hovered == choice ? .white.opacity(0.75) : .secondary)
+                        .foregroundStyle(isHighlighted ? .white.opacity(0.75) : .secondary)
                 }
 
                 Spacer(minLength: 0)
+
+                if isDisabled {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .foregroundStyle(hovered == choice ? .white : .primary)
+            .foregroundStyle(isHighlighted ? .white : .primary)
+            .opacity(isDisabled ? 0.45 : 1)
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(hovered == choice ? Color.accentColor : .clear)
+                    .fill(isHighlighted ? Color.accentColor : .clear)
             }
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .help(isDisabled ? "\(choice.title.dropFirst(4)) can only be added once." : "")
         .onHover { isInside in
             hovered = isInside ? choice : (hovered == choice ? nil : hovered)
         }
