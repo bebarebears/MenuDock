@@ -57,6 +57,9 @@ final class StatusItemController {
     /// True while this item's menu is being tracked, so the glyph layer knows to invert.
     private var isPresentingMenu = false
 
+    /// The menu currently on screen, so a sample landing mid-tracking can refresh its readings.
+    private var presentedMenu: NSMenu?
+
     /// Tooltip and accessibility strings already installed on the button.
     ///
     /// Cached purely so the animation path can skip them. They used to be reassigned on every
@@ -325,9 +328,11 @@ final class StatusItemController {
     private func metricsTick() {
         guard let entry = activity else { return }
 
-        // Ahead of the redraw check, because the tooltip carries a decimal place the strip does
-        // not: 67.2% and 67.4% both draw as `67%` but should not both be reported as 67.2%.
+        // Both of these run ahead of the redraw check, because both carry a decimal place the
+        // strip does not: 67.2% and 67.4% draw as the same `67%`, so the check below would skip
+        // a tick that genuinely changes what the tooltip and the open menu say.
         updateActivityTooltip()
+        updatePresentedMenu()
 
         // The gauges may round to the same pixels two ticks running — three numeric readouts on
         // an idle machine usually do. Comparing a handful of integers is free next to
@@ -489,6 +494,18 @@ final class StatusItemController {
         button.toolTip = tooltip(title: item.displayTitle, isRunning: false)
     }
 
+    /// Refreshes the readings in this item's menu while it is open.
+    ///
+    /// A no-op for every other kind of item: their menus carry no rows tagged with a metric, so
+    /// the walk finds nothing. Cheap enough to call unconditionally rather than track which kind
+    /// of menu is currently up.
+    private func updatePresentedMenu() {
+        guard isPresentingMenu, let menu = presentedMenu else { return }
+        MenuBuilder.updateActivityReadings(in: menu) { [metrics] metric in
+            metrics.latest(for: metric)
+        }
+    }
+
     private func tooltip(title: String, isRunning: Bool) -> String {
         switch item.kind {
         case .activity(let entry):
@@ -625,12 +642,15 @@ final class StatusItemController {
         // The glyph layer does its own template tinting, so it has to be told about the
         // highlighted state AppKit would otherwise have inverted for us. `performClick` blocks
         // for the duration of menu tracking, so this brackets exactly the highlighted period —
-        // and animation frames drawn *during* tracking pick the flag up too.
+        // and animation frames, metric samples and menu refreshes that land *during* tracking
+        // all pick these up too.
         isPresentingMenu = true
+        presentedMenu = menu
         glyph.invalidateTint()
         defer {
             statusItem.menu = nil
             isPresentingMenu = false
+            presentedMenu = nil
             glyph.invalidateTint()
             applyImage()
         }

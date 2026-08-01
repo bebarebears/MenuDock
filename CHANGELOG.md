@@ -9,7 +9,9 @@ All notable changes to MenuDock are recorded here. This project follows
 - **Activity items** — a live system readout in the menu bar, alongside apps, folders and groups.
   Shows CPU, GPU, memory, network up/down and disk read/write; each metric is drawn as a graph,
   bar, ring or number, with an optional caption, and the item sizes itself to fit whatever is
-  configured. Clicking it lists every reading in full and offers Activity Monitor.
+  configured. Clicking it lists every reading in full and offers Activity Monitor; those readings
+  keep updating while the menu is open, on a fixed column so the menu cannot resize under the
+  cursor.
   Counters are read directly from the kernel (`host_statistics`, `getifaddrs`, IOKit) rather than
   by shelling out, only the metrics actually on screen are sampled, and sampling stops when the
   menu bar is hidden, locked or asleep. A default item costs ~0.18% of one core.
