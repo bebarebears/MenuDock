@@ -105,6 +105,131 @@ struct MenuBuilder {
         return menu
     }
 
+    // MARK: - Activity items
+
+    /// The menu for an Activity item: every gauge's current reading spelled out in full, then a
+    /// way through to the app that shows the rest.
+    ///
+    /// The strip in the menu bar is deliberately terse — four characters for a rate, no units —
+    /// because that is what fits. This is where the terseness gets paid back: `11.9 MB/s` rather
+    /// than `11.9M`, and the metric's real name rather than a one-letter caption.
+    ///
+    /// The reading rows stay **live** while the menu is open; see
+    /// ``updateActivityReadings(in:value:)`` for how, and why the rows are laid out on a tab stop.
+    func activityMenu(
+        for entry: ActivityEntry,
+        itemID: DockItem.ID,
+        readings: [ActivityMetric: Double?]
+    ) -> NSMenu {
+        let menu = NSMenu()
+        menu.addHeader(entry.effectiveTitle)
+
+        if entry.gauges.isEmpty {
+            menu.addPlaceholder("No metrics in this item")
+        }
+
+        // Deduplicated, because two gauges may draw the same metric two different ways and one
+        // reading listed twice reads as a bug.
+        var listed: [ActivityMetric] = []
+        for gauge in entry.gauges where !listed.contains(gauge.metric) {
+            listed.append(gauge.metric)
+        }
+
+        let tab = Self.readingTabLocation(for: listed)
+        for metric in listed {
+            let item = NSMenuItem(title: metric.displayName, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            // Tags the row as a live reading. Safe alongside `addAction`'s use of the same
+            // property to anchor a closure: these rows are disabled and have no action, so the
+            // two meanings can never land on the same item.
+            item.representedObject = metric
+            item.attributedTitle = Self.readingTitle(
+                metric: metric,
+                value: readings[metric].flatMap { $0 },
+                tab: tab
+            )
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        menu.addAction("Open Activity Monitor") {
+            AppLauncher.openActivityMonitor()
+        }
+
+        appendManagementSection(to: menu, itemID: itemID, removeTitle: "Remove from Menu Bar")
+        return menu
+    }
+
+    /// Rewrites the reading rows of an already-open Activity menu.
+    ///
+    /// `StatusItemController.present(_:)` blocks on `performClick` for the whole tracking
+    /// session, so a menu built once would show the readings frozen at the instant it was
+    /// clicked — while the icon beside it carried on updating, which is exactly how you notice.
+    /// The metrics timer runs in the `.common` run loop mode and therefore keeps firing during
+    /// tracking, so the fix is to let that tick reach in here and rewrite the titles; AppKit
+    /// redraws an open menu when its items' titles change.
+    static func updateActivityReadings(in menu: NSMenu, value: (ActivityMetric) -> Double?) {
+        let metrics = menu.items.compactMap { $0.representedObject as? ActivityMetric }
+        guard !metrics.isEmpty else { return }
+
+        let tab = readingTabLocation(for: metrics)
+        for item in menu.items {
+            guard let metric = item.representedObject as? ActivityMetric else { continue }
+            item.attributedTitle = readingTitle(metric: metric, value: value(metric), tab: tab)
+        }
+    }
+
+    /// One reading row: the metric's name, then its value right-aligned on a tab stop.
+    ///
+    /// The tab stop is not decoration. A menu sizes itself to its widest row, so with plainly
+    /// concatenated text a value going from `9.3%` to `19.3%` would widen the whole menu *under
+    /// the cursor* once a second. Pinning the value column to a position computed from the
+    /// widest string any of these metrics can produce makes the menu a fixed size for as long as
+    /// it is open, and lines the numbers up as a column while it is at it.
+    private static func readingTitle(
+        metric: ActivityMetric,
+        value: Double?,
+        tab: CGFloat
+    ) -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [NSTextTab(textAlignment: .right, location: tab)]
+
+        let font = NSFont.menuFont(ofSize: 0)
+        let result = NSMutableAttributedString(
+            string: "\(metric.displayName)\t",
+            attributes: [.font: font, .paragraphStyle: style]
+        )
+        result.append(NSAttributedString(
+            string: value.map { metric.verboseString($0) } ?? "—",
+            attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: font.pointSize, weight: .regular),
+                .paragraphStyle: style,
+                .foregroundColor: value == nil
+                    ? NSColor.tertiaryLabelColor
+                    : NSColor.labelColor,
+            ]
+        ))
+        return result
+    }
+
+    /// Where the value column ends: the widest metric name here, plus a gap, plus the widest
+    /// value any of them could ever print.
+    private static func readingTabLocation(for metrics: [ActivityMetric]) -> CGFloat {
+        let font = NSFont.menuFont(ofSize: 0)
+        let digits = NSFont.monospacedDigitSystemFont(ofSize: font.pointSize, weight: .regular)
+
+        let widestName = metrics
+            .map { $0.displayName.size(withAttributes: [.font: font]).width }
+            .max() ?? 0
+        // Not the current values: the point is a column that cannot move, so it is measured
+        // against the longest string `verboseString` is capable of returning, for every unit.
+        let widestValue = ["100.0%", "999.99 GB/s", "999.9 W"]
+            .map { $0.size(withAttributes: [.font: digits]).width }
+            .max() ?? 0
+
+        return (widestName + 26 + widestValue).rounded(.up)
+    }
+
     // MARK: - Folder items
 
     /// Left-click menu for a folder item holding several folders: one row per folder, so the

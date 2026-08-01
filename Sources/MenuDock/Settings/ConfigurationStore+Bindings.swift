@@ -66,4 +66,15 @@ extension DockItem {
             kind = .folder(newValue)
         }
     }
+
+    var activityEntry: ActivityEntry? {
+        get {
+            if case .activity(let activity) = kind { return activity }
+            return nil
+        }
+        set {
+            guard let newValue else { return }
+            kind = .activity(newValue)
+        }
+    }
 }

@@ -124,6 +124,7 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
         case application(AppEntry)
         case group(GroupEntry)
         case folder(FolderEntry)
+        case activity(ActivityEntry)
     }
 
     private enum CodingKeys: String, CodingKey { case id, kind, iconSize }
@@ -140,6 +141,10 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
 
     init(folder: FolderReference) {
         self.init(kind: .folder(FolderEntry(name: folder.name, folders: [folder])))
+    }
+
+    init(activity: ActivityEntry = ActivityEntry()) {
+        self.init(kind: .activity(activity))
     }
 
     init(from decoder: Decoder) throws {
@@ -165,12 +170,20 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
 nonisolated extension DockItem.Kind {
     /// Read/write access to whichever entry's icon this kind wraps, so callers never have to
     /// unwrap the enum just to change a glyph.
+    ///
+    /// An **activity** item has no icon in this sense: its whole appearance is generated from
+    /// live data by ``ActivityRenderer``, and there is no artwork for a user to choose. Rather
+    /// than make this property optional — which would put an unwrap at every one of its callers
+    /// for the sake of one case — it reports a representative symbol and ignores writes. The
+    /// symbol is what surfaces where a generic icon is genuinely wanted (the Add menu), and the
+    /// two places that draw the real thing ask ``ActivityRenderer`` directly.
     var icon: IconSpec {
         get {
             switch self {
             case .application(let entry): entry.icon
             case .group(let group): group.icon
             case .folder(let folder): folder.icon
+            case .activity: .symbol("waveform.path.ecg")
             }
         }
         set {
@@ -184,6 +197,8 @@ nonisolated extension DockItem.Kind {
             case .folder(var folder):
                 folder.icon = newValue
                 self = .folder(folder)
+            case .activity:
+                break
             }
         }
     }
@@ -195,6 +210,7 @@ nonisolated extension DockItem {
         case .application(let entry): entry.displayTitle
         case .group(let group): group.name
         case .folder(let folder): folder.effectiveTitle
+        case .activity(let activity): activity.effectiveTitle
         }
     }
 
@@ -208,7 +224,7 @@ nonisolated extension DockItem {
         switch kind {
         case .application(let entry): [entry.app]
         case .group(let group): group.members.map(\.app)
-        case .folder: []
+        case .folder, .activity: []
         }
     }
 
@@ -221,6 +237,8 @@ nonisolated extension DockItem {
             ([group.icon.customFileName] + group.members.map(\.icon.customFileName)).compactMap { $0 }
         case .folder(let folder):
             [folder.icon.customFileName].compactMap { $0 }
+        case .activity:
+            []
         }
     }
 
@@ -232,6 +250,17 @@ nonisolated extension DockItem {
     var isFolder: Bool {
         if case .folder = kind { return true }
         return false
+    }
+
+    var isActivity: Bool {
+        if case .activity = kind { return true }
+        return false
+    }
+
+    /// The entry behind an activity item, or `nil` for every other kind.
+    var activity: ActivityEntry? {
+        if case .activity(let entry) = kind { return entry }
+        return nil
     }
 
     /// The size this item's icon should be drawn at, honouring its own override and clamped to
@@ -248,8 +277,8 @@ nonisolated extension DockItem {
 // MARK: - Codable
 
 nonisolated extension DockItem.Kind: Codable {
-    private enum CodingKeys: String, CodingKey { case type, entry, group, folder }
-    private enum Discriminator: String, Codable { case application, group, folder }
+    private enum CodingKeys: String, CodingKey { case type, entry, group, folder, activity }
+    private enum Discriminator: String, Codable { case application, group, folder, activity }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -260,6 +289,8 @@ nonisolated extension DockItem.Kind: Codable {
             self = .group(try container.decode(GroupEntry.self, forKey: .group))
         case .folder:
             self = .folder(try container.decode(FolderEntry.self, forKey: .folder))
+        case .activity:
+            self = .activity(try container.decode(ActivityEntry.self, forKey: .activity))
         }
     }
 
@@ -275,6 +306,9 @@ nonisolated extension DockItem.Kind: Codable {
         case .folder(let folder):
             try container.encode(Discriminator.folder, forKey: .type)
             try container.encode(folder, forKey: .folder)
+        case .activity(let activity):
+            try container.encode(Discriminator.activity, forKey: .type)
+            try container.encode(activity, forKey: .activity)
         }
     }
 }

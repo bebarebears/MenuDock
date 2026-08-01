@@ -5,6 +5,7 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
     case app
     case folder
     case group
+    case activity
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
         case .app: "Add App"
         case .folder: "Add Folder"
         case .group: "Add Group"
+        case .activity: "Add Activity"
         }
     }
 
@@ -21,6 +23,7 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
         case .app: "One click launches it"
         case .folder: "Opens in Finder"
         case .group: "Several apps, one icon"
+        case .activity: "Live CPU, memory, network"
         }
     }
 
@@ -29,6 +32,7 @@ enum AddItemChoice: String, CaseIterable, Identifiable {
         case .app: "square.grid.2x2"
         case .folder: "folder"
         case .group: "rectangle.stack"
+        case .activity: "waveform.path.ecg"
         }
     }
 }

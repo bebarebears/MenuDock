@@ -15,8 +15,9 @@ import Observation
 ///    means each frame is drawn at most once, ever; steady-state animation is a dictionary
 ///    lookup plus an `NSImage` assignment.
 /// 3. **Nothing runs when nothing can be seen.** The timer stops when the screens sleep, when
-///    the session is switched away or the screen is locked, and when every animated item is
-///    occluded — which is what happens the moment a fullscreen app hides the menu bar.
+///    the session is switched away or the screen is locked — all three via
+///    ``DisplayActivityMonitor`` — and when every animated item is occluded, which is what
+///    happens the moment a fullscreen app hides the menu bar.
 /// 4. **Less runs when the battery is doing the paying.** Low Power Mode halves the frame rate.
 ///
 /// Animation is also suppressed entirely when the system's Reduce Motion accessibility setting
@@ -48,13 +49,13 @@ final class IconAnimator {
     /// Items whose status item is currently on screen. Absence means occluded, not unknown —
     /// see ``setVisible(_:isVisible:)``.
     @ObservationIgnored private var visibleSubscribers: Set<UUID> = []
-    @ObservationIgnored private var screensAsleep = false
-    @ObservationIgnored private var sessionInactive = false
-    @ObservationIgnored private var screenLocked = false
+    /// Screen sleep, fast user switching, lock state and Low Power Mode, shared with
+    /// ``MetricsMonitor``.
+    @ObservationIgnored private let display: DisplayActivityMonitor
+    @ObservationIgnored private let displayListenerID = UUID()
     /// Kept per notification centre, because each token may only be removed from the centre it
     /// came from.
     @ObservationIgnored private var observers: [(NotificationCenter, NSObjectProtocol)] = []
-    @ObservationIgnored private var distributedObservers: [NSObjectProtocol] = []
     /// The rate the live timer was created at, so a power-state change only rebuilds it when the
     /// rate actually differs.
     @ObservationIgnored private var timerFrameRate: Double = 0
@@ -69,7 +70,7 @@ final class IconAnimator {
     }
 
     private var lowPowerModeEnabled: Bool {
-        ProcessInfo.processInfo.isLowPowerModeEnabled
+        display.isLowPowerMode
     }
 
     private var frameRate: Double {
@@ -89,72 +90,37 @@ final class IconAnimator {
         lowPowerModeEnabled && animationEnabled && !reduceMotionEnabled
     }
 
-    init() {
-        let workspace = NSWorkspace.shared.notificationCenter
+    init(display: DisplayActivityMonitor) {
+        self.display = display
 
-        observe(workspace, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, .reevaluate)
-        observe(workspace, NSWorkspace.screensDidSleepNotification, .screensAsleep(true))
-        observe(workspace, NSWorkspace.screensDidWakeNotification, .screensAsleep(false))
-        // Fast user switching. The other session's menu bar is the one on screen; ours is not.
-        observe(workspace, NSWorkspace.sessionDidResignActiveNotification, .sessionInactive(true))
-        observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification, .sessionInactive(false))
+        // Screen sleep, user switching, lock and power state all arrive through the shared
+        // monitor; only Reduce Motion is this class's own business.
+        observe(NSWorkspace.shared.notificationCenter,
+                NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
 
-        observe(.default, NSNotification.Name.NSProcessInfoPowerStateDidChange, .reevaluate)
-
-        // A locked screen can sit there for hours. `screensDidSleep` does not cover it — the
-        // display stays awake showing the login window, so without this the icons would animate
-        // behind it all afternoon.
-        observeDistributed("com.apple.screenIsLocked", .screenLocked(true))
-        observeDistributed("com.apple.screenIsUnlocked", .screenLocked(false))
+        display.addListener(displayListenerID) { [weak self] in
+            self?.updateTimer()
+        }
     }
 
     isolated deinit {
         timer?.invalidate()
+        display.removeListener(displayListenerID)
         for (center, observer) in observers { center.removeObserver(observer) }
-        for observer in distributedObservers {
-            DistributedNotificationCenter.default().removeObserver(observer)
-        }
     }
 
     // MARK: - Observation plumbing
 
-    /// What a notification does to this animator.
+    /// Re-decides whether the timer should run when `name` is posted.
     ///
-    /// A value rather than a closure because the observer block is `@Sendable` and runs outside
-    /// the main actor: a closure that assigns to `screensAsleep` would be a data race the
-    /// compiler is right to reject. Sending an enum across and switching on it inside the
-    /// main-actor hop keeps every mutation where it belongs.
-    private enum Effect: Sendable {
-        /// Nothing to record; just re-decide whether the timer should be running.
-        case reevaluate
-        case screensAsleep(Bool)
-        case sessionInactive(Bool)
-        case screenLocked(Bool)
-    }
-
-    private func apply(_ effect: Effect) {
-        switch effect {
-        case .reevaluate: break
-        case .screensAsleep(let value): screensAsleep = value
-        case .sessionInactive(let value): sessionInactive = value
-        case .screenLocked(let value): screenLocked = value
-        }
-        updateTimer()
-    }
-
-    private func observe(_ center: NotificationCenter, _ name: Notification.Name, _ effect: Effect) {
+    /// The observer block is `@Sendable` and runs outside the main actor, so it hops before
+    /// touching anything here — which is also why it carries no payload: everything this class
+    /// reacts to is re-read from its source inside ``shouldRun``.
+    private func observe(_ center: NotificationCenter, _ name: Notification.Name) {
         let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.apply(effect) }
+            MainActor.assumeIsolated { self?.updateTimer() }
         }
         observers.append((center, token))
-    }
-
-    private func observeDistributed(_ name: String, _ effect: Effect) {
-        distributedObservers.append(DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name(name), object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.apply(effect) }
-        })
     }
 
     // MARK: - Subscription
@@ -198,9 +164,7 @@ final class IconAnimator {
         !visibleSubscribers.isEmpty
             && animationEnabled
             && !reduceMotionEnabled
-            && !screensAsleep
-            && !sessionInactive
-            && !screenLocked
+            && display.isDisplayActive
     }
 
     private func updateTimer() {

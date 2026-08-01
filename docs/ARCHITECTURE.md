@@ -25,7 +25,8 @@ Sources/MenuDock/
 │   ├── AppReference.swift         relocation-tolerant pointer to an installed app
 │   ├── FolderReference.swift      relocation-tolerant pointer to a folder
 │   ├── IconSpec.swift             appIcon | symbol | builtin | custom(file, renderingMode)
-│   ├── DockItem.swift             one status item: .application, .group or .folder (+ size)
+│   ├── ActivityEntry.swift        gauges: metric x style x caption, + refresh interval
+│   ├── DockItem.swift             one status item: .application, .group, .folder or .activity
 │   └── Configuration.swift        the on-disk document + schemaVersion
 ├── Store/
 │   ├── ConfigurationStore.swift   @Observable source of truth, debounced atomic writes
@@ -33,9 +34,14 @@ Sources/MenuDock/
 ├── Services/
 │   ├── AppLauncher.swift          launch / activate / hide / quit via NSWorkspace
 │   ├── RunningAppsMonitor.swift   push-based running-state tracking
-│   └── InstalledAppsIndex.swift   background scan of /Applications for the picker
+│   ├── InstalledAppsIndex.swift   background scan of /Applications for the picker
+│   ├── SystemMetrics.swift        kernel counters: CPU, memory, GPU, network, disk
+│   ├── MetricsMonitor.swift       one timer, demand-gated samplers, history windows
+│   └── DisplayActivityMonitor.swift  can anyone see the menu bar? (shared by both timers)
 ├── Icons/
 │   ├── ImageAnalysis.swift        saturation-based monochrome detection
+│   ├── BitmapCompositor.swift     multi-scale bitmap packing, shared by both renderers
+│   ├── ActivityRenderer.swift     draws gauge strips and computes their width
 │   ├── IconRenderer.swift         fit + template + running-dot compositing
 │   └── Builtin/
 │       ├── Pen.swift              drawing primitives on a 24x24 y-down grid
@@ -50,14 +56,16 @@ Sources/MenuDock/
 │   ├── MenuBuilder.swift            builds NSMenus from live state
 │   └── MenuAction.swift             closure-backed menu items
 └── Settings/                      SwiftUI, hosted in a plain NSWindow
-    └── AddItemPopup.swift         the + menu, drawn inside the window
+    ├── AddItemPopup.swift         the + menu, drawn inside the window
+    └── ActivityEditor.swift       gauge list + a preview that is the real renderer
 
 Tools/GenerateAppIcon/           draws Resources/AppIcon.icns (`make icon`)
+Tools/RenderActivity/            draws docs/images/activity-styles.png (`make activity-sheet`)
 ```
 
 ---
 
-## The seven decisions that shape everything
+## The eight decisions that shape everything
 
 ### 1. One `NSStatusItem` per entry, reconciled by identity — and the list is the order
 
@@ -241,6 +249,43 @@ The rows in a folder's left-click menu carry **no submenu**, and that is load-be
 sends a menu item's action when the item has a submenu — it opens the submenu instead — so attaching
 per-folder extras there would have silently made every row do nothing. Those extras live in the
 right-click menu, where a row is a heading rather than the one action the menu exists for.
+
+### 8. Activity items pay only for what is on screen
+
+An Activity item is the fourth `DockItem.Kind`, and the first one whose appearance is *generated*
+rather than chosen: there is no `IconSpec` behind it, so `Kind.icon` reports a stand-in symbol and
+ignores writes, and the two surfaces that draw the real thing call `ActivityRenderer` directly.
+
+Three things make it affordable enough to sit in a menu bar all day.
+
+**Counters, not subprocesses.** CPU comes from `host_statistics(HOST_CPU_LOAD_INFO)` — the
+aggregate call, not `host_processor_info`, which allocates a per-core array the caller has to
+`vm_deallocate` — memory from `host_statistics64`, network from `getifaddrs`, and GPU and disk from
+IORegistry properties on service handles that are looked up once and held. Shelling out to `top` or
+`ioreg` once a second is how this feature is usually written and it is two to four orders of
+magnitude more expensive than the `mach_msg` it wraps. All five samplers together are ~0.39 ms.
+
+**Demand gating.** `MetricsMonitor` unions every subscriber's metrics and creates only those
+samplers; dropping the last GPU gauge releases the GPU's registry handle and its history. This is
+most of the win, because GPU, network and disk are ~90% of the per-tick cost, and the common case
+is a CPU-and-memory item that touches none of them. It is why one default item costs 0.18% of a
+core and one with six metrics costs 0.38%.
+
+**Nothing observable.** Samples deliberately do *not* land in state `StatusItemCoordinator`
+observes. If they did, every tick would trigger a full menu bar reconcile. Subscribers get an
+explicit callback and pull what they need; the single `@Observable` property is `generation`, which
+exists so the settings preview can redraw and which the coordinator never reads.
+
+Screen sleep, user switching, lock state and Low Power Mode moved out of `IconAnimator` into
+`DisplayActivityMonitor` when the second timer arrived, so the two cannot disagree about whether
+anyone can see the menu bar.
+
+The one non-obvious rule in the renderer is that **width never depends on the current value**. A
+numeric gauge is measured from the widest string its metric can produce, which is why
+`ActivityMetric.compactString` goes to the trouble of guaranteeing four characters — including
+rounding *before* choosing the unit, since formatting 9,999,999 B/s by magnitude first yields
+`10.0M` and overflows a cell measured for four. A status item that changes width once a second
+drags every icon to its left along with it.
 
 ## Installing, and the app icon
 

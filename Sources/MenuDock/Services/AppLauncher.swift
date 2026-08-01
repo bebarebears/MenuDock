@@ -107,6 +107,23 @@ enum AppLauncher {
         }
     }
 
+    /// Opens Activity Monitor, the click-through destination for an Activity item.
+    ///
+    /// Located by bundle identifier rather than by hardcoded path: `/System/Applications` is
+    /// where it lives on current macOS, but it moved there from `/Applications/Utilities` and a
+    /// path would have silently broken at that boundary.
+    static func openActivityMonitor() {
+        guard let url = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: "com.apple.ActivityMonitor"
+        ) else {
+            log.error("Activity Monitor could not be located")
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration, completionHandler: nil)
+    }
+
     static func revealInFinder(_ reference: AppReference) {
         guard let url = reference.resolvedURL else {
             presentMissingApplication(reference)

@@ -18,6 +18,7 @@ final class StatusItemController {
     private let icons: IconLibrary
     private let running: RunningAppsMonitor
     private let animator: IconAnimator
+    private let metrics: MetricsMonitor
     private let menus: MenuBuilder
 
     private var item: DockItem
@@ -39,11 +40,25 @@ final class StatusItemController {
     /// frame can return without touching AppKit at all.
     private var lastRenderedFrame: Int?
 
+    // MARK: - Activity state
+
+    /// The gauges this item shows, or `nil` if it is not an Activity item.
+    private var activity: ActivityEntry?
+    /// Size the gauge strip renders at, recomputed only when the gauges or the height change.
+    private var activitySize: CGSize = .zero
+    /// What the gauges last *displayed*, so a tick whose values round to the same pixels can
+    /// return without rendering. `nil` means "cannot be compared" — see ``activitySignature()``.
+    private var lastActivitySignature: [Int]?
+    private var isSubscribedToMetrics = false
+
     /// Presents animated frames without redrawing the status item's view. See ``GlyphLayer``.
     private let glyph = GlyphLayer()
 
     /// True while this item's menu is being tracked, so the glyph layer knows to invert.
     private var isPresentingMenu = false
+
+    /// The menu currently on screen, so a sample landing mid-tracking can refresh its readings.
+    private var presentedMenu: NSMenu?
 
     /// Tooltip and accessibility strings already installed on the button.
     ///
@@ -80,6 +95,7 @@ final class StatusItemController {
         icons: IconLibrary,
         running: RunningAppsMonitor,
         animator: IconAnimator,
+        metrics: MetricsMonitor,
         menus: MenuBuilder
     ) {
         self.id = item.id
@@ -88,6 +104,7 @@ final class StatusItemController {
         self.icons = icons
         self.running = running
         self.animator = animator
+        self.metrics = metrics
         self.menus = menus
 
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -103,6 +120,7 @@ final class StatusItemController {
         configureButton()
         resolveRenderState()
         updateAnimationSubscription()
+        updateMetricsSubscription()
         observeOcclusion()
         refresh()
     }
@@ -111,6 +129,7 @@ final class StatusItemController {
     /// here. Without it the icon would linger in the menu bar after its model entry is gone.
     isolated deinit {
         animator.unsubscribe(id)
+        metrics.unsubscribe(id)
         if let occlusionObserver {
             NotificationCenter.default.removeObserver(occlusionObserver)
         }
@@ -137,6 +156,7 @@ final class StatusItemController {
         self.preferences = preferences
         resolveRenderState()
         updateAnimationSubscription()
+        updateMetricsSubscription()
         applyImage()
         updateLabels()
     }
@@ -145,9 +165,30 @@ final class StatusItemController {
     /// any of them changed — a resized or re-skinned icon must not keep showing frames rendered
     /// for the old one.
     private func resolveRenderState() {
+        let size = item.resolvedIconSize(default: preferences.iconSize)
+
+        // An Activity item has no icon to resolve — its appearance is generated from live data —
+        // so it takes an early exit rather than being threaded through the glyph logic below.
+        if let entry = item.activity {
+            let newSize = ActivityRenderer.size(for: entry, height: size)
+            if entry != activity || newSize != activitySize {
+                lastActivitySignature = nil
+            }
+            activity = entry
+            activitySize = newSize
+            animatedIcon = nil
+            renderedSize = size
+            showsRunningDot = false
+            lastRenderedFrame = nil
+            return
+        }
+
+        activity = nil
+        activitySize = .zero
+        lastActivitySignature = nil
+
         let icon = icons.builtinIcon(for: item.icon)
         let animated = icon?.isAnimated == true ? icon : nil
-        let size = item.resolvedIconSize(default: preferences.iconSize)
         let dot = preferences.showRunningIndicator && isRunning
 
         if animated?.id != animatedIcon?.id || size != renderedSize || dot != showsRunningDot {
@@ -175,6 +216,31 @@ final class StatusItemController {
         }
     }
 
+    /// Registers this item's demand for system metrics, or withdraws it.
+    ///
+    /// Called on every model change rather than only on creation, because editing an Activity
+    /// item's gauges is exactly how the set of metrics needing sampling changes — dropping the
+    /// last GPU gauge in Settings is what releases the GPU sampler's IORegistry handle.
+    private func updateMetricsSubscription() {
+        guard let entry = activity, !entry.gauges.isEmpty else {
+            if isSubscribedToMetrics {
+                metrics.unsubscribe(id)
+                isSubscribedToMetrics = false
+            }
+            return
+        }
+
+        metrics.subscribe(
+            id,
+            metrics: entry.requiredMetrics,
+            interval: entry.interval
+        ) { [weak self] in
+            self?.metricsTick()
+        }
+        isSubscribedToMetrics = true
+        reportVisibility()
+    }
+
     // MARK: - Visibility
 
     /// Watches for the menu bar going away — a fullscreen app, or auto-hide — so the animator
@@ -193,19 +259,26 @@ final class StatusItemController {
     }
 
     private func reportVisibility() {
-        guard isSubscribedToAnimation else { return }
+        guard isSubscribedToAnimation || isSubscribedToMetrics else { return }
 
         guard let window = statusItem.button?.window else {
-            animator.setVisible(id, isVisible: true)
+            setVisible(true)
             return
         }
 
         if window.occlusionState.contains(.visible) {
             hasEverBeenVisible = true
-            animator.setVisible(id, isVisible: true)
+            setVisible(true)
         } else {
-            animator.setVisible(id, isVisible: !hasEverBeenVisible)
+            setVisible(!hasEverBeenVisible)
         }
+    }
+
+    /// Both timers get the same answer: an occluded status item is equally not worth animating
+    /// and not worth sampling for.
+    private func setVisible(_ isVisible: Bool) {
+        animator.setVisible(id, isVisible: isVisible)
+        metrics.setVisible(id, isVisible: isVisible)
     }
 
     // MARK: - Drawing
@@ -240,9 +313,85 @@ final class StatusItemController {
                 showsRunningDot: showsRunningDot,
                 index: index
             ),
-            size: renderedSize,
+            size: CGSize(width: renderedSize, height: renderedSize),
             isHighlighted: isPresentingMenu
         )
+    }
+
+    // MARK: - Activity
+
+    /// Per-sample callback for an Activity item.
+    ///
+    /// Goes through ``GlyphLayer`` for the same reason animated icons do: assigning
+    /// `button.image` takes a synchronous fence with the window server on every redraw, and a
+    /// gauge that updates once a second all day would pay that fence 86,400 times.
+    private func metricsTick() {
+        guard let entry = activity else { return }
+
+        // Both of these run ahead of the redraw check, because both carry a decimal place the
+        // strip does not: 67.2% and 67.4% draw as the same `67%`, so the check below would skip
+        // a tick that genuinely changes what the tooltip and the open menu say.
+        updateActivityTooltip()
+        updatePresentedMenu()
+
+        // The gauges may round to the same pixels two ticks running — three numeric readouts on
+        // an idle machine usually do. Comparing a handful of integers is free next to
+        // rasterising text.
+        let signature = activitySignature(for: entry)
+        if let signature, signature == lastActivitySignature { return }
+        lastActivitySignature = signature
+
+        renderActivity(entry)
+    }
+
+    private func renderActivity(_ entry: ActivityEntry) {
+        var readings: [ActivityMetric: ActivityRenderer.Reading] = [:]
+        for metric in entry.requiredMetrics {
+            readings[metric] = ActivityRenderer.Reading(
+                current: metrics.latest(for: metric),
+                series: metrics.series(for: metric)
+            )
+        }
+
+        glyph.show(
+            ActivityRenderer.image(for: entry, readings: readings, height: renderedSize),
+            size: activitySize,
+            isHighlighted: isPresentingMenu
+        )
+    }
+
+    /// A compact stand-in for what the gauges currently *look like*, or `nil` when no such
+    /// comparison is possible.
+    ///
+    /// A graph redraws on every tick by definition — its window slides one sample left whether
+    /// or not the newest value is new — so a single graph anywhere in the item makes the whole
+    /// signature meaningless and this returns `nil`. Everything else is quantised to roughly the
+    /// precision the gauge can actually display: a bar to finer than one pixel of its own
+    /// height, a number to the exact string it would print.
+    private func activitySignature(for entry: ActivityEntry) -> [Int]? {
+        var parts: [Int] = []
+        parts.reserveCapacity(entry.gauges.count)
+
+        for gauge in entry.gauges {
+            if gauge.style.usesHistory { return nil }
+
+            guard let value = metrics.latest(for: gauge.metric) else {
+                parts.append(Int.min)
+                continue
+            }
+
+            switch gauge.style {
+            case .number:
+                parts.append(gauge.metric.compactString(value).hashValue)
+            case .bar, .ring:
+                let ceiling = max(metrics.series(for: gauge.metric).max() ?? 0,
+                                  gauge.metric.scaleFloor)
+                parts.append(Int((value / ceiling * 512).rounded()))
+            case .graph:
+                return nil
+            }
+        }
+        return parts
     }
 
     /// Redraws the icon and refreshes everything around it — tooltip, accessibility, running
@@ -260,7 +409,10 @@ final class StatusItemController {
     private func applyImage() {
         guard let button = statusItem.button else { return }
 
-        if let icon = animatedIcon {
+        if let entry = activity {
+            lastActivitySignature = activitySignature(for: entry)
+            renderActivity(entry)
+        } else if let icon = animatedIcon {
             let frame = BuiltinIconCatalog.frameIndex(
                 for: phase(for: icon, at: Date.timeIntervalSinceReferenceDate)
             )
@@ -316,11 +468,57 @@ final class StatusItemController {
 
         button.toolTip = tooltip(title: title, isRunning: isRunning)
         button.setAccessibilityLabel(title)
-        button.setAccessibilityValue(isRunning ? "Running" : "Not running")
+
+        if let entry = activity {
+            // Deliberately the *names* of the gauges, not their values.
+            //
+            // A live accessibility value on a status item that changes once a second makes
+            // VoiceOver announce a new number every second for as long as focus rests on it,
+            // which is unusable. The readings are reachable two better ways — the tooltip, and
+            // the click-through menu — and both are things the user asks for rather than things
+            // that interrupt them.
+            let names = entry.gauges.map(\.metric.displayName).joined(separator: ", ")
+            button.setAccessibilityValue(names.isEmpty ? "No metrics" : names)
+        } else {
+            button.setAccessibilityValue(isRunning ? "Running" : "Not running")
+        }
+    }
+
+    /// Refreshes only the tooltip, for an Activity item whose readings have moved on.
+    ///
+    /// Split out from ``updateLabels()`` because it runs on every sample and that method does
+    /// not: `toolTip` is a cheap stored property, while the accessibility setters beside it
+    /// notify the accessibility system and have no business being called on a timer.
+    private func updateActivityTooltip() {
+        guard let button = statusItem.button, activity != nil else { return }
+        button.toolTip = tooltip(title: item.displayTitle, isRunning: false)
+    }
+
+    /// Refreshes the readings in this item's menu while it is open.
+    ///
+    /// A no-op for every other kind of item: their menus carry no rows tagged with a metric, so
+    /// the walk finds nothing. Cheap enough to call unconditionally rather than track which kind
+    /// of menu is currently up.
+    private func updatePresentedMenu() {
+        guard isPresentingMenu, let menu = presentedMenu else { return }
+        MenuBuilder.updateActivityReadings(in: menu) { [metrics] metric in
+            metrics.latest(for: metric)
+        }
     }
 
     private func tooltip(title: String, isRunning: Bool) -> String {
         switch item.kind {
+        case .activity(let entry):
+            // Every gauge's current reading, spelled out. The strip itself is deliberately
+            // terse — `C 67%` — so the tooltip is where "which metric is that?" gets answered
+            // without opening a menu.
+            let readings = entry.gauges.map { gauge in
+                let value = metrics.latest(for: gauge.metric)
+                    .map { gauge.metric.verboseString($0) } ?? "—"
+                return "\(gauge.metric.displayName): \(value)"
+            }
+            return readings.isEmpty ? title : ([title] + readings).joined(separator: "\n")
+
         case .application, .group:
             return isRunning ? "\(title) — Running" : title
         case .folder(let entry):
@@ -342,14 +540,14 @@ final class StatusItemController {
     }
 
     /// Whether this item should read as "running": the app itself, or any member of a group.
-    /// Folders have no such state.
+    /// Folders and Activity items have no such state.
     private var isRunning: Bool {
         switch item.kind {
         case .application(let entry):
             return running.isRunning(entry.app.bundleIdentifier)
         case .group(let group):
             return group.members.contains { running.isRunning($0.app.bundleIdentifier) }
-        case .folder:
+        case .folder, .activity:
             return false
         }
     }
@@ -406,6 +604,19 @@ final class StatusItemController {
                 present(menus.groupMenu(for: group, itemID: id))
             }
 
+        case .activity(let entry):
+            // Both buttons open the same menu. There is no "one obvious action" to reserve the
+            // left click for the way there is for an app — the item is a readout, not a launcher
+            // — and its menu is where the exact numbers live, so making that harder to reach in
+            // order to preserve a distinction the item does not have would be a net loss.
+            present(menus.activityMenu(
+                for: entry,
+                itemID: id,
+                readings: entry.gauges.reduce(into: [:]) { readings, gauge in
+                    readings[gauge.metric] = metrics.latest(for: gauge.metric)
+                }
+            ))
+
         case .folder(let entry):
             if wantsContextMenu {
                 present(menus.contextMenu(for: entry, itemID: id))
@@ -431,12 +642,15 @@ final class StatusItemController {
         // The glyph layer does its own template tinting, so it has to be told about the
         // highlighted state AppKit would otherwise have inverted for us. `performClick` blocks
         // for the duration of menu tracking, so this brackets exactly the highlighted period —
-        // and animation frames drawn *during* tracking pick the flag up too.
+        // and animation frames, metric samples and menu refreshes that land *during* tracking
+        // all pick these up too.
         isPresentingMenu = true
+        presentedMenu = menu
         glyph.invalidateTint()
         defer {
             statusItem.menu = nil
             isPresentingMenu = false
+            presentedMenu = nil
             glyph.invalidateTint()
             applyImage()
         }

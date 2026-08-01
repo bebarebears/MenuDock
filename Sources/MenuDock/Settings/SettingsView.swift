@@ -219,6 +219,9 @@ struct MenuBarItemsView: View {
         case .group:
             store.addGroup()
             selection = store.configuration.items.last?.id
+        case .activity:
+            store.addActivity()
+            selection = store.configuration.items.last?.id
         }
     }
 
@@ -300,6 +303,8 @@ private struct ItemRow: View {
                         .frame(width: 5, height: 5)
                         .help("Running")
                 }
+            case .activity(let entry):
+                countBadge(entry.gauges.count)
             }
         }
         .padding(.vertical, 2)
