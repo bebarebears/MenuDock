@@ -5,6 +5,8 @@ All notable changes to MenuDock are recorded here. This project follows
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Added
 - **Clipboard items** — a searchable history of what you copy, in the menu bar. Records text
   (with RTF alongside it, so one row pastes formatted into Pages and plain into a terminal),
@@ -54,6 +56,45 @@ All notable changes to MenuDock are recorded here. This project follows
 - Bundle identifier is now `com.bebarebears.MenuDock`. Existing settings in
   `~/Library/Application Support/MenuDock` are unaffected, but launch-at-login has to be
   re-enabled once after upgrading, because macOS tracks login items by bundle identifier.
+- The clipboard dropdown no longer carries a permanent hint strip along its bottom edge. Return,
+  ⌘⌫ and Escape are what every list on the platform already uses, and the item count answered a
+  question nobody asked; a panel meant to be read in a second was spending a fifth of its height
+  on a legend. The hold-⌘⇧-and-tap-V hints remain, shown only during a hold, which is the one
+  moment they are neither guessable nor ignorable.
+- The clipboard dropdown appears and dismisses instantly, like a menu, instead of fading.
+
+### Fixed
+- **The clipboard dropdown could climb above the top of the screen and stay there**, taking its
+  search field with it. Its SwiftUI content was pinned to the window with required constraints, so
+  the list's own ideal height — every row, not the seven that fit — could win the argument with the
+  window's height and Auto Layout would resize the window to settle it. AppKit windows grow from
+  their bottom-left origin, so the extra height went straight up through the menu bar. Two things
+  then made it permanent: resizes were computed from the panel's current frame, adopting the bad
+  top edge as truth, and AppKit's own frame-constraining was free to move the panel afterwards.
+  The panel is now sized by its window and never the reverse, every frame is derived from the menu
+  bar anchor rather than from the previous frame, and the top edge is clamped to the screen — so a
+  displacement from any cause now survives exactly until the next keystroke.
+- **The search field only accepted typing the first time the dropdown was ever opened.** The panel
+  is built once and reused, so the `onAppear` that focused the field fired once in the life of the
+  app; every open after that landed on a window whose first responder was whatever had been left
+  behind. It is now focused on every presentation.
+- **Typing a search left the selection on an arbitrary row** rather than on the top match, so the
+  obvious gesture — type a few letters, press Return — pasted the wrong item. A new query now
+  selects its best match.
+- **Moving the mouse over the list made it scroll on its own.** Hovering a row selected it,
+  selecting a row scrolled it to centre, and scrolling slid a different row under a cursor that had
+  not moved — which selected *that*, and the list crawled until it hit an end. Hover no longer
+  scrolls, and it is ignored entirely unless the pointer has actually moved, so rows arriving under
+  a resting cursor (while the wheel scrolls, while the arrow keys scroll, while a search
+  re-filters) no longer overrule the keyboard. The wheel and the scrollbar are what scroll the
+  list.
+- **⌘⇧V raised the Settings window over the app being pasted into** whenever Settings was open.
+  Activating an app raises all of its windows and AppKit offers no way to opt one out, so the raise
+  is now undone for windows that were behind another app to begin with. Pressing the shortcut while
+  actually working in Settings leaves it alone — and no longer aims the paste at some app
+  remembered from earlier, which is why it appeared to do nothing at all.
+- A capture landing while the dropdown is open no longer shifts the selection onto a different
+  item. The selection follows the item, not the row number.
 
 ## [0.1.0]
 
