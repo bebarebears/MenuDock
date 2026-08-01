@@ -12,6 +12,19 @@ import SwiftUI
 final class ClipboardPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// AppKit's own screen-fitting, declined.
+    ///
+    /// `constrainFrameRect(_:to:)` runs on every `setFrame` and every order-front, and its default
+    /// implementation will move a window it considers badly placed — in particular one whose top
+    /// edge is up against the menu bar, which is exactly where this panel is *supposed* to hang.
+    /// ``ClipboardPanelController`` already clamps the panel to its screen deliberately, so the
+    /// only thing AppKit's correction could do here is displace a frame that was already right.
+    /// Returning the proposal untouched leaves the controller as the one thing that decides where
+    /// this panel is.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
 }
 
 /// Owns the clipboard dropdown: where it appears, what the keyboard does to it, and the
@@ -73,7 +86,6 @@ final class ClipboardPanelController {
 
         model.onChoose = { [weak self] item in self?.choose(item) }
         model.onDelete = { [weak self] item in self?.delete(item) }
-        model.onClose = { [weak self] in self?.close() }
         model.onLayoutChange = { [weak self] in self?.resizeToFit() }
     }
 
@@ -100,25 +112,10 @@ final class ClipboardPanelController {
         // way in costs one date comparison per item and makes the setting mean what it says.
         history.prune(retention: entry.retention, maxItems: entry.maxItems)
 
-        model.title = entry.effectiveTitle
-        model.query = ""
-        model.selection = 0
-        model.isCycling = cycling
-        model.clampSelection()
+        model.prepare(title: entry.effectiveTitle, cycling: cycling)
 
         // Captured before activating, or it would be MenuDock.
-        //
-        // MenuDock is also rejected explicitly, which is not belt-and-braces. Handing focus back
-        // after a paste is asynchronous, so a second ⌘⇧V a moment later can arrive while this app
-        // is *still* frontmost — and capturing ourselves then would aim the next paste at our own
-        // panel, where it lands nowhere and reports success. Keeping the previous value is right
-        // in that window: it is the app the user was in either way.
-        if !isVisible {
-            let frontmost = NSWorkspace.shared.frontmostApplication
-            if frontmost?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-                previousApp = frontmost
-            }
-        }
+        if !isVisible { captureCallingApp() }
 
         let panel = panel ?? makePanel()
         self.panel = panel
@@ -128,6 +125,58 @@ final class ClipboardPanelController {
 
         NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
+        lowerOtherWindows()
+        // `NSApp.activate()` is asynchronous and does its own raising when it lands, so this runs
+        // once more behind it.
+        Task { @MainActor [weak self] in self?.lowerOtherWindows() }
+    }
+
+    /// Remembers the app to hand the chosen item back to.
+    ///
+    /// MenuDock is rejected explicitly, which is not belt-and-braces. Handing focus back after a
+    /// paste is asynchronous, so a second ⌘⇧V a moment later can arrive while this app is *still*
+    /// frontmost — and capturing ourselves then would aim the next paste at our own panel, where
+    /// it lands nowhere and reports success. Keeping the previous value is right in that window:
+    /// it is the app the user was in either way.
+    ///
+    /// Unless they are in *this* app for real. If one of MenuDock's own windows is key, the user
+    /// is working in Settings, and the app remembered from some earlier paste is not where they
+    /// are now — pressing ⌘V into it would drop the item into a window they are not looking at.
+    /// Forgetting it means the item is copied and nothing else happens, which is the honest
+    /// outcome when there is nowhere to paste.
+    private func captureCallingApp() {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        guard frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
+            previousApp = frontmost
+            return
+        }
+        if let key = NSApp.keyWindow, key !== panel {
+            previousApp = nil
+        }
+    }
+
+    /// Puts MenuDock's other windows back behind everything, after activation has yanked them up.
+    ///
+    /// Activating an app raises *all* of its windows, and AppKit offers no way to opt one out. For
+    /// MenuDock that means the Settings window vaults over whatever the user was working in the
+    /// moment they press ⌘⇧V — they asked for their clipboard and got a preferences pane in their
+    /// face, on top of the very app the paste was meant for. It is also the reason the shortcut
+    /// looked broken rather than merely untidy: what fills the screen is Settings, and the panel it
+    /// is supposed to be showing is a strip under the menu bar above it.
+    ///
+    /// So the raise is undone — but only when there is another app to go back to. If the user
+    /// pressed the shortcut while working *in* Settings, that window is the one they are using and
+    /// sending it to the back would be its own bug.
+    private func lowerOtherWindows() {
+        guard previousApp != nil else { return }
+        // `canBecomeMain` is what separates a window the user works in from the rest of what
+        // `NSApp.windows` returns — which for this app is mostly status item windows, one per icon
+        // in the menu bar. Reordering those is at best pointless and at worst a menu bar that
+        // rearranges itself every time someone presses ⌘⇧V.
+        for window in NSApp.windows
+        where window.isVisible && window !== panel && window.canBecomeMain {
+            window.order(.below, relativeTo: 0)
+        }
     }
 
     /// Closes without pasting. Clearing ``isCycling`` first is what makes Escape a genuine cancel:
@@ -141,8 +190,11 @@ final class ClipboardPanelController {
     }
 
     private func makePanel() -> ClipboardPanel {
+        // Any size will do — ``position(_:under:)`` sets the real one before the panel is ever
+        // shown — but it has to be a size, because the views below are laid out against it.
+        let content = NSRect(x: 0, y: 0, width: Self.width, height: 300)
         let panel = ClipboardPanel(
-            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 300),
+            contentRect: content,
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -155,7 +207,11 @@ final class ClipboardPanelController {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovable = false
-        panel.animationBehavior = .utilityWindow
+        // No appear/dismiss animation, for the same reason menus do not have one: this drops from
+        // an icon the user just clicked and it should already be there. The fade also had a cost
+        // beyond feel — an interrupted one leaves the window's layer stranded mid-transform, which
+        // reads on screen as an empty translucent card sitting somewhere the panel never was.
+        panel.animationBehavior = .none
         // Follows the user onto other Spaces and sits over fullscreen apps — a shortcut that
         // works everywhere except the app you are currently in fullscreen is not a shortcut.
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
@@ -163,7 +219,8 @@ final class ClipboardPanelController {
         // A real `NSVisualEffectView` rather than SwiftUI's `.regularMaterial`. In a borderless
         // transparent window the SwiftUI material has nothing behind it to sample and renders as
         // flat grey; the AppKit view blurs what is actually on screen behind the panel.
-        let backdrop = NSVisualEffectView()
+        let backdrop = NSVisualEffectView(frame: content)
+        backdrop.autoresizingMask = [.width, .height]
         backdrop.material = .menu
         backdrop.blendingMode = .behindWindow
         backdrop.state = .active
@@ -175,15 +232,26 @@ final class ClipboardPanelController {
         backdrop.layer?.borderWidth = 1
         backdrop.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.6).cgColor
 
+        // Sized by the window, never the other way round.
+        //
+        // This used to be four Auto Layout constraints pinning the hosting view to the backdrop's
+        // edges, and that is the bug that sent the panel off the top of the screen. A required
+        // edge-to-edge pin lets the SwiftUI content's own ideal height — a list, so *every row*,
+        // not the seven that fit — argue with the window's height, and Auto Layout settles it by
+        // resizing the window. An AppKit window grows from its bottom-left origin, so the height
+        // the list asked for went straight up: through the menu bar, off the screen, taking the
+        // search field with it. And it stayed there, because from then on the panel was simply a
+        // window of that size.
+        //
+        // Springs and struts have no such opinion, and `sizingOptions` is emptied so the hosting
+        // view contributes no size constraints of its own either. ``fittingHeight`` is now the
+        // only thing that decides how tall this panel is.
         let hosting = NSHostingView(rootView: ClipboardPanelView(model: model))
-        hosting.translatesAutoresizingMaskIntoConstraints = false
+        hosting.sizingOptions = []
+        hosting.translatesAutoresizingMaskIntoConstraints = true
+        hosting.frame = backdrop.bounds
+        hosting.autoresizingMask = [.width, .height]
         backdrop.addSubview(hosting)
-        NSLayoutConstraint.activate([
-            hosting.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
-            hosting.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
-            hosting.topAnchor.constraint(equalTo: backdrop.topAnchor),
-            hosting.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor),
-        ])
 
         panel.contentView = backdrop
         return panel
@@ -191,33 +259,47 @@ final class ClipboardPanelController {
 
     // MARK: - Geometry
 
+    /// Where the panel hangs from, fixed for the life of one presentation.
+    ///
+    /// Every frame the panel is ever given is derived from this — both the first one and each
+    /// resize as rows are filtered in and out.
+    ///
+    /// ## Why the panel does not measure itself
+    ///
+    /// It used to resize *around its own frame*, taking `panel.frame.maxY` as the top edge to keep
+    /// pinned. That makes any one-off displacement permanent: a frame AppKit constrained to a
+    /// screen, a Spaces switch, a display being unplugged, a hosting view briefly demanding more
+    /// height than the window had. Whatever the panel's top edge became, the next resize adopted
+    /// it as the truth and the one after that preserved it — so the panel would climb up out of
+    /// the screen and *stay* there, with nothing but closing and reopening it to bring it back.
+    ///
+    /// An anchor cannot drift. Deriving each frame from it means a displacement, from any cause,
+    /// survives exactly until the next keystroke.
+    private struct Placement {
+        /// Screen y of the panel's top edge — just under the menu bar.
+        var top: CGFloat
+        /// Screen x of its left edge, before clamping.
+        var x: CGFloat
+        /// The visible frame of the screen it must stay inside.
+        var screen: NSRect
+    }
+
+    private var placement: Placement?
+
     /// Height for the current number of rows, so a two-item history is a small card rather than a
     /// tall one that is mostly empty.
     private var fittingHeight: CGFloat {
         let rows = model.results.count
-        let chrome = ClipboardPanelView.searchHeight + ClipboardPanelView.footerHeight + 12
+        // The hint strip only exists during a hold-to-cycle, so it is only paid for then.
+        let hints = model.isCycling ? ClipboardPanelView.hintBarHeight : 0
+        let chrome = ClipboardPanelView.searchHeight + hints + 12
         guard rows > 0 else { return chrome + 118 }
         let visible = min(rows, ClipboardPanelView.maximumVisibleRows)
         return chrome + CGFloat(visible) * ClipboardPanelView.rowHeight
     }
 
-    private func resizeToFit() {
-        guard let panel, panel.isVisible else { return }
-        let frame = panel.frame
-        let height = fittingHeight
-        guard abs(frame.height - height) > 0.5 else { return }
-        // Grows downward from a fixed top edge, so the panel stays pinned under the menu bar
-        // instead of climbing over it as rows are filtered away.
-        panel.setFrame(
-            NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height),
-            display: true,
-            animate: false
-        )
-    }
-
-    /// Drops the panel from the menu bar icon, clamped to stay on screen.
-    private func position(_ panel: ClipboardPanel, under anchor: NSRect?) {
-        let height = fittingHeight
+    /// Resolves where the panel should hang, given the menu bar icon's frame if there is one.
+    private func resolvePlacement(anchor: NSRect?) -> Placement {
         let screen = anchor.flatMap { rect in
             NSScreen.screens.first { $0.frame.intersects(rect) }
         } ?? NSScreen.main
@@ -226,23 +308,59 @@ final class ClipboardPanelController {
         // Centred under the icon is what reads as "this came from there". Without an anchor —
         // the shortcut pressed while the item is hidden in an overflowing menu bar — it falls
         // back to the top right, where the icon would have been.
-        var x: CGFloat
-        var top: CGFloat
-        if let anchor {
-            x = anchor.midX - Self.width / 2
-            top = anchor.minY - Self.anchorGap
-        } else {
-            x = visible.maxX - Self.width - 12
-            top = visible.maxY - Self.anchorGap
+        guard let anchor else {
+            return Placement(top: visible.maxY - Self.anchorGap,
+                             x: visible.maxX - Self.width - 12,
+                             screen: visible)
         }
+        // The top is clamped to the visible frame as well as offset from the icon. A status item
+        // that is hidden in the overflow, or whose window has been torn down, reports a frame that
+        // is somewhere else entirely — and an unclamped top taken from it is how the panel ended
+        // up above the top of the screen in the first place.
+        return Placement(top: min(anchor.minY - Self.anchorGap, visible.maxY),
+                         x: anchor.midX - Self.width / 2,
+                         screen: visible)
+    }
 
-        x = min(max(x, visible.minX + 8), visible.maxX - Self.width - 8)
-        let bottom = max(top - height, visible.minY + 8)
+    /// The frame for a given content height, clamped to the placement's screen.
+    private func frame(for placement: Placement, height: CGFloat) -> NSRect {
+        let screen = placement.screen
+        let floor = screen.minY + 8
+        // Never taller than the gap between the menu bar and the bottom of the screen, and never
+        // so short there is nothing to look at.
+        let height = min(height, max(placement.top - floor, ClipboardPanelView.searchHeight + 60))
+        let rightmost = max(screen.maxX - Self.width - 8, screen.minX + 8)
+        let x = min(max(placement.x, screen.minX + 8), rightmost)
+        return NSRect(x: x, y: placement.top - height, width: Self.width, height: height)
+    }
 
-        panel.setFrame(
-            NSRect(x: x, y: bottom, width: Self.width, height: min(height, top - visible.minY - 8)),
-            display: false
-        )
+    private func resizeToFit() {
+        guard let panel, panel.isVisible, let placement else { return }
+        let target = frame(for: placement, height: fittingHeight)
+        // Compared against the whole frame rather than just the height: if something has moved the
+        // panel, this is the moment that gets noticed and undone.
+        guard !target.equalTo(panel.frame) else { return }
+        // Debug rather than info: where the panel ends up is the one thing a report of "it opened
+        // off the top of the screen" needs and the one thing a screenshot of it cannot give, since
+        // by the time anyone looks the panel has been closed and reopened. `make logs` shows it.
+        log.debug("""
+            resize \(NSStringFromRect(panel.frame), privacy: .public) \
+            -> \(NSStringFromRect(target), privacy: .public)
+            """)
+        panel.setFrame(target, display: true, animate: false)
+    }
+
+    /// Drops the panel from the menu bar icon, clamped to stay on screen.
+    private func position(_ panel: ClipboardPanel, under anchor: NSRect?) {
+        let placement = resolvePlacement(anchor: anchor)
+        self.placement = placement
+        let target = frame(for: placement, height: fittingHeight)
+        log.debug("""
+            position anchor=\(anchor.map { NSStringFromRect($0) } ?? "nil", privacy: .public) \
+            screen=\(NSStringFromRect(placement.screen), privacy: .public) \
+            -> \(NSStringFromRect(target), privacy: .public)
+            """)
+        panel.setFrame(target, display: false)
     }
 
     // MARK: - Keyboard
@@ -461,7 +579,7 @@ final class ClipboardPanelController {
 
     private func delete(_ item: ClipboardItem) {
         history.remove(id: item.id)
-        model.clampSelection()
+        model.itemsChanged()
         resizeToFit()
     }
 

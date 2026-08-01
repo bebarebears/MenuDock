@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// State shared between the panel's AppKit shell and its SwiftUI contents.
@@ -13,16 +14,44 @@ final class ClipboardPanelModel {
     var title: String = "Clipboard"
     var query: String = ""
 
-    /// Index into ``results``. Kept valid by every mutation here, so no view has to bounds-check.
-    var selection: Int = 0
+    /// Index into ``results``. Every write goes through the methods below, which is what keeps it
+    /// in bounds and keeps ``selectedID`` in agreement with it.
+    private(set) var selection: Int = 0
+
+    /// The item ``selection`` currently points at.
+    ///
+    /// Held so a history that changes underneath the panel keeps the selection on the same *item*
+    /// rather than the same row number. A capture landing while the panel is open inserts at the
+    /// top and pushes every row down one, so an index alone would quietly come to mean a different
+    /// item — and Return would paste something the user had never pointed at.
+    private(set) var selectedID: ClipboardItem.ID?
+
+    /// Bumped whenever the selection moves for a reason the list should scroll to follow.
+    ///
+    /// The list scrolls in response to *this*, never to ``selection`` on its own — which is the
+    /// whole of the fix for a list that used to creep under a cursor that was not moving. See
+    /// ``hover(over:)``.
+    private(set) var scrollTick: Int = 0
 
     /// True while the recall shortcut's modifiers are still held. The view uses it to explain
     /// what releasing them will do, which is the only way that gesture is discoverable.
     var isCycling: Bool = false
 
+    /// Bumped once per presentation, so the view can put the keyboard back in the search field.
+    ///
+    /// The panel is built once and reused — ordered out and back in — so `onAppear` fires exactly
+    /// once in the life of the app. Focusing the search field there meant it was focused the first
+    /// time the panel was ever opened and never again: every open after that landed on a window
+    /// whose first responder was whatever had been left behind, and typing went nowhere. Which is
+    /// how a search field can look completely fine and simply not work.
+    private(set) var presentation: Int = 0
+
+    /// Where the pointer was when it last selected a row, so hovers that arrive because the *list*
+    /// moved can be told apart from hovers the user meant. See ``hover(over:)``.
+    private var lastHoverLocation: NSPoint = .zero
+
     var onChoose: (ClipboardItem) -> Void = { _ in }
     var onDelete: (ClipboardItem) -> Void = { _ in }
-    var onClose: () -> Void = {}
     /// Fired when the number of visible rows changes, so the panel can resize to fit them.
     var onLayoutChange: () -> Void = {}
 
@@ -50,6 +79,22 @@ final class ClipboardPanelModel {
         return results[selection]
     }
 
+    // MARK: - Moving the selection
+
+    /// Resets everything a fresh presentation should start from.
+    ///
+    /// The pointer's position is recorded here as well, and that is deliberate: the panel drops out
+    /// of the menu bar, often straight under a cursor that has not moved a pixel. Treating that
+    /// as a hover would hand row three to a user who pressed a shortcut expecting row one.
+    func prepare(title: String, cycling: Bool) {
+        self.title = title
+        query = ""
+        isCycling = cycling
+        lastHoverLocation = NSEvent.mouseLocation
+        select(0, scroll: true)
+        presentation &+= 1
+    }
+
     /// Moves the selection, wrapping at both ends.
     ///
     /// Wrapping matters for the hold-to-cycle gesture specifically: the user is tapping V without
@@ -58,16 +103,61 @@ final class ClipboardPanelModel {
     func move(by offset: Int) {
         let count = results.count
         guard count > 0 else { return }
-        selection = ((selection + offset) % count + count) % count
+        select(((selection + offset) % count + count) % count, scroll: true)
     }
 
-    func clampSelection() {
-        let count = results.count
-        guard count > 0 else {
-            selection = 0
-            return
+    /// Selects a row the pointer has moved onto.
+    ///
+    /// Guarded on the pointer having *actually moved*, because SwiftUI fires `onHover` whenever a
+    /// row arrives under the cursor — and rows arrive under a perfectly still cursor all the time:
+    /// while the wheel scrolls, while the arrow keys scroll, while typing re-filters the list.
+    /// Left ungated it meant a cursor resting anywhere over the list silently overruled the
+    /// keyboard, so arrowing down scrolled the list and the selection immediately snapped back to
+    /// whatever row had slid under the mouse.
+    ///
+    /// It is ignored outright during a cycle. A hold-to-cycle gesture is the keyboard's, and where
+    /// the user happens to have left the pointer is not a vote.
+    func hover(over index: Int) {
+        guard !isCycling else { return }
+        let location = NSEvent.mouseLocation
+        guard location != lastHoverLocation else { return }
+        lastHoverLocation = location
+        guard results.indices.contains(index) else { return }
+        // Deliberately does not scroll. Hovering to select and selecting to scroll formed a loop
+        // with the mouse inside it — the hovered row was centred, centring slid a *different* row
+        // under the stationary cursor, that row selected itself, and the list crawled on its own
+        // until it hit an end. Now the wheel and the scrollbar are the only things a mouse can
+        // scroll this list with.
+        select(index, scroll: false)
+    }
+
+    /// A new query means a new list, and the top match is what it should land on.
+    ///
+    /// Clamping the old index instead — which is what this used to do — left a user who typed a
+    /// search with the selection on the *last* match, or on whatever row the clamp happened to
+    /// produce, so the obvious follow-up of typing a few letters and pressing Return pasted the
+    /// wrong thing.
+    func queryChanged() {
+        select(0, scroll: true)
+    }
+
+    /// Re-finds the selected item after the history itself has changed.
+    func itemsChanged() {
+        let results = results
+        if let selectedID, let index = results.firstIndex(where: { $0.id == selectedID }) {
+            select(index, scroll: false)
+        } else {
+            select(min(selection, max(results.count - 1, 0)), scroll: false)
         }
-        selection = min(max(selection, 0), count - 1)
+    }
+
+    /// The single place ``selection`` is written.
+    private func select(_ index: Int, scroll: Bool) {
+        let results = results
+        let clamped = results.isEmpty ? 0 : min(max(index, 0), results.count - 1)
+        selection = clamped
+        selectedID = results.indices.contains(clamped) ? results[clamped].id : nil
+        if scroll { scrollTick &+= 1 }
     }
 }
 
@@ -82,7 +172,8 @@ struct ClipboardPanelView: View {
 
     static let rowHeight: CGFloat = 52
     static let searchHeight: CGFloat = 40
-    static let footerHeight: CGFloat = 26
+    /// Height of the hint strip shown *only* during a hold-to-cycle. See ``hintBar``.
+    static let hintBarHeight: CGFloat = 26
     /// Most rows shown before the list starts scrolling.
     static let maximumVisibleRows = 7
 
@@ -91,17 +182,24 @@ struct ClipboardPanelView: View {
             searchField
             Divider().opacity(0.6)
             content
-            Divider().opacity(0.6)
-            footer
+            if model.isCycling {
+                Divider().opacity(0.6)
+                hintBar
+            }
         }
         .background(.clear)
         .onAppear { isSearchFocused = true }
+        // And again on every open after the first — see ``ClipboardPanelModel/presentation``.
+        .onChange(of: model.presentation) { _, _ in isSearchFocused = true }
         .onChange(of: model.query) { _, _ in
-            model.clampSelection()
+            model.queryChanged()
             model.onLayoutChange()
         }
         .onChange(of: model.history.items.count) { _, _ in
-            model.clampSelection()
+            model.itemsChanged()
+            model.onLayoutChange()
+        }
+        .onChange(of: model.isCycling) { _, _ in
             model.onLayoutChange()
         }
     }
@@ -160,13 +258,17 @@ struct ClipboardPanelView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 5)
                 }
-                // Keeps the cycled-to row on screen. Driven from `selection` rather than from the
-                // keystroke, so it works the same whether the selection moved by arrow key, by a
-                // ⌘⇧V tap, or because the list was re-filtered underneath it.
-                .onChange(of: model.selection) { _, _ in
+                // Keeps a *keyboard-moved* row on screen — an arrow key, a ⌘⇧V tap, a new search
+                // landing on its top match. Driven from `scrollTick` rather than from `selection`
+                // so that the one thing which must never scroll the list, the mouse passing over
+                // it, cannot: see ``ClipboardPanelModel/hover(over:)``.
+                .onChange(of: model.scrollTick) { _, _ in
                     guard let item = model.selectedItem else { return }
                     withAnimation(.easeOut(duration: 0.12)) {
-                        proxy.scrollTo(item.id, anchor: .center)
+                        // No anchor, so this scrolls the minimum needed to bring the row into
+                        // view. Centring every selection instead made a single arrow key shove
+                        // the whole list half a panel, which reads as the list moving on its own.
+                        proxy.scrollTo(item.id)
                     }
                 }
             }
@@ -190,37 +292,26 @@ struct ClipboardPanelView: View {
         .padding(.vertical, 22)
     }
 
-    // MARK: - Footer
+    // MARK: - Hints
 
-    private var footer: some View {
+    /// Shown only while the modifiers are down.
+    ///
+    /// There used to be a permanent strip here spelling out Return, ⌘⌫ and Escape next to a running
+    /// item count. It was noise: those are the three keys every list on the platform already uses,
+    /// the count answers a question nobody asked, and a dropdown meant to be read in a second spent
+    /// a fifth of its height on a legend. The hold-to-cycle gesture is the one thing here that is
+    /// genuinely unguessable — and the one moment it is worth saying is while the user is mid-hold.
+    private var hintBar: some View {
         HStack(spacing: 10) {
-            if model.isCycling {
-                // Shown only while the modifiers are down, because this is the one moment the
-                // instruction is both relevant and impossible to guess. Escape is listed beside
-                // them because releasing now commits — without a stated way out, a user who
-                // opened the list only to look has no idea how to not paste.
-                hint("tap V", "next")
-                hint("release", "paste")
-                hint("esc", "cancel")
-            } else {
-                hint("↩", "paste")
-                hint("⌘⌫", "delete")
-                hint("esc", "close")
-            }
+            hint("tap V", "next")
+            hint("release", "paste")
+            // Listed beside them because releasing commits — without a stated way out, a user who
+            // opened the list only to look has no idea how to *not* paste.
+            hint("esc", "cancel")
             Spacer(minLength: 0)
-            Text(countLabel)
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 12)
-        .frame(height: Self.footerHeight)
-    }
-
-    private var countLabel: String {
-        let shown = model.results.count
-        let total = model.history.items.count
-        if shown == total { return total == 1 ? "1 item" : "\(total) items" }
-        return "\(shown) of \(total)"
+        .frame(height: Self.hintBarHeight)
     }
 
     private func hint(_ key: String, _ meaning: String) -> some View {
@@ -294,8 +385,8 @@ private struct ClipboardRow: View {
         .onHover { hovering in
             isHovered = hovering
             // Hover moves the selection, so the keyboard and the mouse never disagree about which
-            // row Return will paste.
-            if hovering { model.selection = index }
+            // row Return will paste — but only when the pointer is the thing that moved.
+            if hovering { model.hover(over: index) }
         }
         .contextMenu {
             Button("Paste") { model.onChoose(item) }
