@@ -33,7 +33,10 @@ Or download `MenuDock.dmg` from the [latest release](https://github.com/bebarebe
 and drag it to Applications.
 
 MenuDock has no Dock icon and no window at startup, so after launching, **look in your menu bar**.
-Click the MenuDock icon, choose *Settings…*, and press **+**.
+A fresh install arrives with a worked example already there — all your apps, your clipboard
+history, a group of the stock Mac apps, Safari, System Settings, and live CPU and memory rings.
+Right-click any of them for *Settings…*, where **+** adds your own and **−** removes anything you
+do not want.
 
 **Requirements:** macOS 14 Sonoma or later. Apple Silicon or Intel.
 
@@ -96,12 +99,8 @@ worth knowing about. Battery and free space count *down*, so their gauges go red
 the range rather than the top. Settings names the exact figures for whichever metric you are
 looking at.
 
-<div align="center">
-  <img src="docs/images/activity-styles.png" width="860" alt="Every Activity gauge style rendered on a light and a dark menu bar at three sizes">
-  <br>
-  <sub>Every style, at 16 / 18 / 22 pt, Light and Dark. Monochrome gauges are template images, so
-  they take the bar's own tint; load-coloured ones resolve their own colour for each appearance.</sub>
-</div>
+Monochrome gauges are template images, so they take the bar's own tint like every system item;
+load-coloured ones resolve their own colour for each appearance.
 
 Click it and every reading appears in full — `11.9 MB/s`, not the four characters that fit up
 there — and keeps updating while the menu is open. Battery adds what it is doing (`Charging · 1:24

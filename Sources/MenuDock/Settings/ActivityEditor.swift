@@ -24,42 +24,44 @@ struct ActivityEditor: View {
                 ActivityPreview(environment: environment, entry: entry, tint: tint, height: height)
             }
 
-            SectionBox("Name") {
+            SectionBox("Name", help: "Shown in the tooltip and at the top of the item's menu.") {
                 TextField("Activity", text: $entry.name)
                     .textFieldStyle(.roundedBorder)
-                Text("Shown in the tooltip and at the top of the item's menu.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             SectionBox("Metrics") {
                 GaugeList(entry: $entry)
             }
 
-            SectionBox("Colour") {
-                TintPicker(
-                    tint: $tint,
-                    note: """
-                        Applies to every gauge set to “Menu bar”. Gauges set to “By load” pick \
-                        their own colour from the reading instead.
-                        """
-                )
+            SectionBox(
+                "Colour",
+                help: """
+                    Applies to every gauge set to “Menu bar”. Gauges set to “By load” pick their \
+                    own colour from the reading instead.
+                    """
+            ) {
+                TintPicker(tint: $tint)
             }
 
             SectionBox("Menu") {
-                Toggle("List the busiest processes", isOn: $entry.showsTopProcesses)
-                Text("""
+                HelpRow("""
                     Shown when you click the item, so you can see what is using the CPU without \
                     opening Activity Monitor. Reading it costs one system call per running \
                     process, so unlike everything else here it is measured only while the menu \
                     is open — never in the background.
-                    """)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    """) {
+                    Toggle("List the busiest processes", isOn: $entry.showsTopProcesses)
+                }
             }
 
-            SectionBox("Updates") {
+            SectionBox(
+                "Updates",
+                help: """
+                    Every interval here is cheap — a reading costs well under a millisecond. \
+                    Sampling stops entirely when the menu bar is hidden or the screen is locked, \
+                    and the interval doubles in Low Power Mode.
+                    """
+            ) {
                 Picker("Refresh", selection: $entry.interval) {
                     ForEach(RefreshInterval.allCases) { interval in
                         Text(interval.displayName).tag(interval)
@@ -67,15 +69,6 @@ struct ActivityEditor: View {
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
-
-                Text("""
-                    Reading the system costs well under a millisecond, so every setting here is \
-                    cheap. Sampling stops entirely when the menu bar is hidden, when the screen \
-                    is locked or asleep, and the interval doubles in Low Power Mode.
-                    """)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

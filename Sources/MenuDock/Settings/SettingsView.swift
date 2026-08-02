@@ -478,30 +478,36 @@ struct GeneralSettingsView: View {
                 }
             }
 
-            Section("Menu Bar Space") {
+            Section {
                 Toggle(
                     "Hide items when the menu bar runs out of room",
                     isOn: store.binding(\.preferences.autoHideWhenCrowded)
                 )
 
-                Text("""
+                if store.configuration.preferences.autoHideWhenCrowded {
+                    SpaceVerdictLine(environment: environment)
+                }
+            } header: {
+                HelpLabel("Menu Bar Space", help: """
                     A 14" MacBook has roughly a third the usable menu bar of a large display once \
                     the notch and the app menus have taken their share, so a setup that fits \
                     docked may not fit undocked. With this on, MenuDock drops its lowest-priority \
                     items rather than letting macOS silently clip whichever happens to be \
                     leftmost. Each item's priority is set in its own pane.
                     """)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if store.configuration.preferences.autoHideWhenCrowded {
-                    SpaceVerdictLine(environment: environment)
-                }
             }
 
-            Section("Profiles") {
+            Section {
                 ProfileEditor(environment: environment)
+            } header: {
+                HelpLabel("Profiles", help: """
+                    A profile is a named subset of your menu bar — “Work”, “Personal”, \
+                    “Presenting”. Items belong to as many as you like, and switching profiles \
+                    shows and hides them without changing anything else about them.
+
+                    A new profile starts with every item in it. Remove what you do not want from \
+                    each item's own pane.
+                    """)
             }
 
             Section {
@@ -585,10 +591,10 @@ private struct SpaceVerdictLine: View {
 
 /// Create, rename, re-symbol and delete profiles.
 ///
-/// The empty state carries the whole explanation, because a list with an + button under a heading
-/// saying "Profiles" tells a first-time reader nothing about what a profile *is* in this app —
-/// and the answer here ("a subset of your items", not "a separate menu bar") is not the one they
-/// would guess.
+/// The section heading carries a `?`, because a list with a + button under a heading saying
+/// "Profiles" tells a first-time reader nothing about what a profile *is* in this app — and the
+/// answer here ("a subset of your items", not "a separate menu bar") is not the one they would
+/// guess.
 private struct ProfileEditor: View {
     let environment: AppEnvironment
 
@@ -600,14 +606,9 @@ private struct ProfileEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if profiles.isEmpty {
-                Text("""
-                    A profile is a named subset of your menu bar — “Work”, “Personal”, \
-                    “Presenting”. Items belong to as many as you like, and switching profiles \
-                    shows and hides them without changing anything else about them.
-                    """)
+                Text("No profiles yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 List(selection: $selection) {
                     ForEach(profiles) { profile in
@@ -617,14 +618,6 @@ private struct ProfileEditor: View {
                 }
                 .listStyle(.bordered)
                 .frame(height: 116)
-
-                Text("""
-                    A new profile starts with every item in it. Remove what you do not want from \
-                    each item's own pane.
-                    """)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 8) {

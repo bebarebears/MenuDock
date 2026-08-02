@@ -3,9 +3,19 @@
 All notable changes to MenuDock are recorded here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0]
 
 ### Added
+- **A fresh install is no longer an empty menu bar.** MenuDock has no Dock icon and no window, so
+  an empty first launch was indistinguishable from an app that failed to start — and an empty item
+  list cannot answer the question that actually matters, which is not "how do I add an app" but
+  "what can this thing be". A new configuration now arrives as a worked example: every installed
+  app, the clipboard history, a group of the stock Mac apps, Safari, System Settings, and CPU and
+  memory as load-coloured rings. Every app in it is resolved through LaunchServices first and
+  anything missing is left out, so nobody gets a broken icon, and the whole set is removable in a
+  click. Only a configuration file that is genuinely *absent* is seeded — a file that fails to
+  decode is quarantined and starts empty exactly as before, because replacing a user's menu bar
+  with a stranger's would read as MenuDock having thrown theirs away.
 - **Profiles** — named subsets of the menu bar you switch between: Work, Personal, Presenting.
   Switch from any item's menu or from the picker above the item list in Settings.
   A profile is a *membership label*, not a second menu bar: there is still one list of items in one
@@ -56,6 +66,18 @@ All notable changes to MenuDock are recorded here. This project follows
   animated icon costs exactly what an uncoloured one does.
 
 ### Changed
+- **The explanatory prose in Settings moved behind a `?`.** Several settings genuinely need a
+  paragraph — what the auto-hide rule does, why the clipboard hotkey behaves like ⌘-Tab, where the
+  history is stored — and printed inline those paragraphs were the *majority* of every pane: a grey
+  wall between one control and the next that a returning user reads exactly never, and that pushed
+  the control they came for below the fold. A `?` beside the heading (or beside the one control it
+  describes) inverts that cost: one click the first time, invisible every time after. It is a
+  button rather than a tooltip because `.help()` needs a hover nobody has a reason to try, offers
+  no hint that anything is there, and cannot be reached from the keyboard.
+  Only static explanation moved. Anything reporting *state* — a missing Accessibility permission, a
+  hotkey another app has claimed, the arithmetic behind an auto-hide decision, the thresholds for
+  the metric being edited — stays on the pane, because a user cannot click a button they have no
+  reason to suspect is relevant.
 - **Adding a metric to an Activity item now shows every metric at once**, with a symbol and a line
   saying what it measures, instead of adding whichever was next and leaving you to change it with a
   popup in the row. The old behaviour made the *set* of available metrics invisible: a user who did
@@ -68,9 +90,10 @@ All notable changes to MenuDock are recorded here. This project follows
   rather than figures, and words are not monospaced — `Fair` and `Crit` are the same four
   characters and not the same width — so sizing a numeric gauge means measuring every string the
   metric can produce rather than looking one up.
-- `docs/images/activity-styles.png` gains rows for the new metrics and for load colouring, and its
-  "every metric" row is split in two: as one row of eleven it set the whole sheet's width and
-  squashed the other fourteen rows to nothing.
+- `docs/images/activity-styles.png` is gone from the README and from the repository. Sixteen rows
+  across two appearances and three sizes is a 5,400-pixel-wide sheet, and at the 860 px a README
+  gives it every gauge in it was illegible — it read as a grey smear where a figure should be.
+  `make activity-sheet` still draws it for anyone who wants to look at it full size.
 
 ## [0.2.0]
 

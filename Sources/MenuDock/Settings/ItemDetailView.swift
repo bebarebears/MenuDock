@@ -53,7 +53,10 @@ struct ItemDetailView: View {
                 )
             }
 
-            SectionBox("Name") {
+            SectionBox(
+                "Name",
+                help: "Shown in tooltips and group menus. Leave it empty to use the app's own name."
+            ) {
                 TextField(
                     entry.app.name,
                     text: Binding(
@@ -62,9 +65,6 @@ struct ItemDetailView: View {
                     )
                 )
                 .textFieldStyle(.roundedBorder)
-                Text("Shown in tooltips and group menus. Leave empty to use the app's own name.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             SectionBox("Application") {
@@ -126,13 +126,13 @@ struct ItemDetailView: View {
                 )
             }
 
-            SectionBox("Name") {
+            SectionBox(
+                "Name",
+                help: "Shown in the tooltip. Leave it as the folder's own name if you like."
+            ) {
                 TextField(folder.folders.count == 1 ? folder.folders[0].name : "Folder item name",
                           text: folderBinding.name)
                     .textFieldStyle(.roundedBorder)
-                Text("Shown in the tooltip. Leave it as the folder's own name if you like.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             SectionBox("Folders to Open") {
@@ -192,7 +192,10 @@ struct ItemDetailView: View {
                 )
             )
 
-            SectionBox("Height") {
+            SectionBox(
+                "Height",
+                help: "Everything scales with this — graphs, bars, and the size of the numbers."
+            ) {
                 HStack {
                     Slider(
                         value: Binding(
@@ -217,9 +220,6 @@ struct ItemDetailView: View {
                             .controlSize(.small)
                     }
                 }
-                Text("Everything scales with this — graphs, bars, and the size of the numbers.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -561,7 +561,14 @@ private struct PrioritySection: View {
     @Binding var item: DockItem
 
     var body: some View {
-        SectionBox("When the menu bar is full") {
+        SectionBox(
+            "When the menu bar is full",
+            help: """
+                The menu bar cannot scroll, and items that do not fit are not clipped — they are \
+                simply not drawn, starting from the left. This is how you choose which ones go \
+                first. Switch the rule on in General.
+                """
+        ) {
             Picker("", selection: $item.priority) {
                 ForEach(ItemPriority.allCases) { priority in
                     Label(priority.displayName, systemImage: priority.symbolName)
@@ -572,18 +579,18 @@ private struct PrioritySection: View {
             .labelsHidden()
             .frame(width: 300)
 
-            if environment.store.configuration.preferences.autoHideWhenCrowded {
-                Text(item.priority.summary)
+            // The summary is *state* — it says what the current selection does — so it stays on
+            // the pane. The "switch it on first" line is too, and it is the reason a user would
+            // otherwise think this control was broken.
+            Text(item.priority.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if !environment.store.configuration.preferences.autoHideWhenCrowded {
+                Label("Not active yet — switch on hiding in General.",
+                      systemImage: "exclamationmark.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else {
-                Text("""
-                    \(item.priority.summary) Nothing is hidden yet — switch on “Hide items when \
-                    the menu bar runs out of room” in General first.
-                    """)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -595,19 +602,30 @@ private struct PrioritySection: View {
 ///
 /// Not `private`, because ``ActivityEditor`` lives in its own file and must produce the same
 /// vertical rhythm as the editors here — the two are shown in the same pane.
+///
+/// `help` puts a ``HelpNote`` beside the heading, which is where an explanation of the *whole*
+/// section belongs. An explanation of one control goes beside that control instead — see
+/// ``HelpRow``.
 struct SectionBox<Content: View>: View {
     let title: String
+    let help: String?
     @ViewBuilder let content: Content
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String, help: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.help = help
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.headline)
+                if let help {
+                    HelpNote(help)
+                }
+            }
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)

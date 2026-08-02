@@ -101,21 +101,19 @@ struct IconEditor: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text("Colour")
-                TintPicker(tint: $tint, note: "")
+                TintPicker(tint: $tint)
                     .disabled(!tintApplies)
                     .opacity(tintApplies ? 1 : 0.5)
+                if tintApplies {
+                    HelpNote("""
+                        A colour replaces the menu bar's own tint for this item, so the icon stops \
+                        tracking Light and Dark. Useful for telling one grey glyph from another at \
+                        a glance.
+                        """)
+                }
             }
 
-            if tintApplies {
-                Text("""
-                    A colour replaces the menu bar's own tint for this item, so the icon stops \
-                    tracking Light and Dark. Useful for telling one grey glyph from another at a \
-                    glance.
-                    """)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
+            if !tintApplies {
                 Label(
                     "This artwork carries its own colour, so a tint would have nothing to do.",
                     systemImage: "paintpalette"

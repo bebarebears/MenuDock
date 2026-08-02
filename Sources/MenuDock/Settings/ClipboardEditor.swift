@@ -17,15 +17,19 @@ struct ClipboardEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SectionBox("Name") {
+            SectionBox("Name", help: "Shown in the tooltip and at the top of the dropdown.") {
                 TextField("Clipboard", text: $entry.name)
                     .textFieldStyle(.roundedBorder)
-                Text("Shown in the tooltip and at the top of the dropdown.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
-            SectionBox("History") {
+            SectionBox(
+                "History",
+                help: """
+                    Both limits apply — whichever runs out first. Items are stored in \
+                    ~/Library/Application Support/MenuDock/Clipboard, and copied files are \
+                    recorded by path, never duplicated.
+                    """
+            ) {
                 historySettings
             }
 
@@ -76,15 +80,6 @@ struct ClipboardEditor: View {
                 .labelsHidden()
             Text("items")
         }
-
-        Text("""
-            Both limits apply — whichever runs out first. Items are stored in \
-            ~/Library/Application Support/MenuDock/Clipboard, and copied *files* are recorded by \
-            path, never duplicated.
-            """)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
 
         Divider().padding(.vertical, 2)
 
@@ -138,53 +133,58 @@ struct ClipboardEditor: View {
 
         Divider().padding(.vertical, 2)
 
-        Toggle("Skip items apps mark as confidential", isOn: $entry.ignoresConfidential)
-        Text("""
+        HelpRow("""
             Password managers flag what they copy so clipboard tools ignore it. Leave this on \
             unless you have a specific reason not to — MenuDock cannot tell a password from any \
             other text on its own.
-            """)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            """) {
+            Toggle("Skip items apps mark as confidential", isOn: $entry.ignoresConfidential)
+        }
     }
 
     // MARK: - Recall
 
     @ViewBuilder
     private var recallSettings: some View {
-        Toggle("Open the history with \(GlobalHotKey.recallDisplayName)", isOn: $entry.hotkeyEnabled)
+        HelpRow("""
+            Let go and it pastes: a plain tap gives you the newest item, and holding ⌘⇧ while \
+            tapping V walks further down the list — the same gesture as ⌘-Tab. Escape cancels \
+            without pasting. To browse without committing to anything, click the menu bar icon \
+            instead; that leaves the list open.
+            """) {
+            Toggle("Open the history with \(GlobalHotKey.recallDisplayName)",
+                   isOn: $entry.hotkeyEnabled)
+        }
 
-        if entry.hotkeyEnabled {
-            if environment.clipboard.hotKeyUnavailable {
-                Label(
-                    "\(GlobalHotKey.recallDisplayName) is already taken by another app, so the "
-                        + "shortcut is not active. Clicking the menu bar icon still works.",
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("""
-                    Let go and it pastes: a plain tap gives you the newest item, and holding ⌘⇧ \
-                    while tapping V walks further down the list — the same gesture as ⌘-Tab. \
-                    Escape cancels without pasting. To browse without committing to anything, \
-                    click the menu bar icon instead; that leaves the list open.
-                    """)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        // A shortcut another app has claimed is state, not explanation, so it stays on the pane.
+        if entry.hotkeyEnabled, environment.clipboard.hotKeyUnavailable {
+            Label(
+                "\(GlobalHotKey.recallDisplayName) is already taken by another app, so the "
+                    + "shortcut is not active. Clicking the menu bar icon still works.",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
         }
 
         Divider().padding(.vertical, 2)
 
-        Toggle("Paste straight into the app I was using", isOn: $entry.pastesAutomatically)
+        HelpRow(entry.pastesAutomatically
+                ? "Choosing an item returns you to the app you were in and pastes it. macOS needs "
+                  + "Accessibility permission before one app can press ⌘V in another."
+                : "Choosing an item copies it and returns you to the app you were in. You press "
+                  + "⌘V yourself.") {
+            Toggle("Paste straight into the app I was using", isOn: $entry.pastesAutomatically)
+        }
         accessibilityNote
     }
 
     /// The permission story, stated plainly and only when it is actually load-bearing.
+    ///
+    /// This is the one explanation here that stays on the pane rather than moving behind a `?`,
+    /// because it is not an explanation — it is a *fault*, with a button that fixes it. A user
+    /// whose auto-paste silently does nothing has no reason to go looking under a question mark.
     ///
     /// The two refusals are shown differently on purpose. "Never granted" is a normal state with an
     /// obvious next step. "Granted to an earlier build" is a **trap**: the switch in System
@@ -236,14 +236,6 @@ struct ClipboardEditor: View {
                     }
                 }
             }
-        } else {
-            Text(entry.pastesAutomatically
-                 ? "Choosing an item returns you to the app you were in and pastes it."
-                 : "Choosing an item copies it and returns you to the app you were in. Press ⌘V "
-                   + "to paste.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

@@ -52,8 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { self?.showSettings() }
         }
 
-        // First run leaves an empty menu bar. With no Dock tile and no window there is
-        // literally nothing to click, so open Settings rather than appearing to do nothing.
+        // An empty menu bar is now only reachable by a user who has deliberately removed
+        // everything — a fresh install is seeded, see ``DefaultConfiguration``. It still has to be
+        // handled: with no Dock tile, no window and no status item there is literally nothing left
+        // to click, so open Settings rather than appearing to do nothing.
         if environment.store.configuration.items.isEmpty {
             showSettings()
         }

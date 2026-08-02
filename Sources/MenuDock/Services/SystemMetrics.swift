@@ -801,7 +801,10 @@ enum SystemMetrics {
             var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
             let length = proc_name(pid, &buffer, UInt32(buffer.count))
             guard length > 0 else { return "PID \(pid)" }
-            return String(cString: buffer)
+            // `proc_name` returns the byte count it wrote, not counting the terminator, so the
+            // slice is exact and there is no NUL to strip. Taken over `String(cString:)`, which is
+            // deprecated for scanning past the end of a buffer that is not reliably terminated.
+            return String(decoding: buffer[..<Int(length)].map(UInt8.init(bitPattern:)), as: UTF8.self)
         }
     }
 

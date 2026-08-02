@@ -22,9 +22,6 @@ extension Optional where Wrapped == IconTint {
 /// appearances (see ``IconTint/palette``), so the fast path is also the one that looks right.
 struct TintPicker: View {
     @Binding var tint: IconTint?
-    /// Shown under the swatches. Differs between an icon and an Activity strip, which is the one
-    /// thing about this control that is not the same everywhere it appears.
-    var note: String
 
     private let swatch: Double = 22
 
@@ -44,30 +41,21 @@ struct TintPicker: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                defaultSwatch
+        HStack(spacing: 7) {
+            defaultSwatch
 
-                Divider().frame(height: swatch - 4)
+            Divider().frame(height: swatch - 4)
 
-                ForEach(IconTint.palette) { named in
-                    swatchButton(named)
-                }
-
-                Divider().frame(height: swatch - 4)
-
-                ColorPicker("Custom colour", selection: customColour, supportsOpacity: false)
-                    .labelsHidden()
-                    .frame(width: swatch + 22)
-                    .help("Choose any colour")
+            ForEach(IconTint.palette) { named in
+                swatchButton(named)
             }
 
-            if !note.isEmpty {
-                Text(note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Divider().frame(height: swatch - 4)
+
+            ColorPicker("Custom colour", selection: customColour, supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: swatch + 22)
+                .help("Choose any colour")
         }
     }
 

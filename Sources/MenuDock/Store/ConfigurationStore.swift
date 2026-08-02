@@ -49,8 +49,13 @@ final class ConfigurationStore {
     init(fileURL: URL = ConfigurationStore.configurationURL) {
         self.fileURL = fileURL
 
+        // No file at all is the one state that means *first launch*, and the only one that may be
+        // seeded — see ``DefaultConfiguration``. It is written straight back out, so a user who
+        // clears the menu bar down to nothing gets an empty file rather than the starter set
+        // again on the next launch. Every other path below leaves the items alone.
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            self.configuration = Configuration()
+            self.configuration = DefaultConfiguration.make()
+            saveNow()
             return
         }
 
@@ -61,6 +66,10 @@ final class ConfigurationStore {
             // A config that cannot be read must never prevent launch — with no Dock icon and
             // no window, the user would have no way to reach the app at all. Preserve the file
             // and start from defaults, but record that we did so: see `didFailToLoad`.
+            //
+            // Deliberately *empty* rather than the first-launch set: the user has a configuration,
+            // it is sitting intact in the quarantined file next door, and replacing their menu bar
+            // with a stranger's would read as MenuDock having thrown it away.
             let backup = fileURL.deletingPathExtension()
                 .appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970)).json")
             try? FileManager.default.moveItem(at: fileURL, to: backup)
