@@ -207,14 +207,17 @@ struct ClipboardEditor: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("""
-                        macOS needs Accessibility permission before one app can press ⌘V in \
-                        another. Without it, choosing an item still copies it and returns you to \
-                        your app — you press ⌘V yourself.
-                        """)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // Deliberately short: *why* macOS needs the permission is now on the toggle's
+                    // `?`, and repeating it here would bury the one line that is news — that until
+                    // it is granted, the feature the user just switched on is doing half its job.
+                    Label(
+                        "Not granted yet, so choosing an item copies it and returns you to your "
+                            + "app — you press ⌘V yourself.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 HStack(spacing: 8) {
