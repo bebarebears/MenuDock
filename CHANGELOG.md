@@ -3,6 +3,16 @@
 All notable changes to MenuDock are recorded here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1]
+
+### Changed
+- The Accessibility note under *Paste straight into the app I was using* no longer repeats what the
+  toggle's own `?` says. Explaining why macOS requires the permission twice, once above the other,
+  buried the only line that is news — that until it is granted, the feature you have just switched
+  on is doing half its job.
+- Reshot `docs/images/settings.png`, which still showed the paragraph under *Name* that moved
+  behind a `?` in 0.3.0, and so advertised a pane the app no longer has.
+
 ## [0.3.0]
 
 ### Added

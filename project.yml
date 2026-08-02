@@ -15,7 +15,7 @@ settings:
     # actor-isolation noise and makes the few genuinely-background paths obvious.
     SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
     SWIFT_APPROACHABLE_CONCURRENCY: YES
-    MARKETING_VERSION: "0.3.0"
+    MARKETING_VERSION: "0.3.1"
     CURRENT_PROJECT_VERSION: "1"
     DEAD_CODE_STRIPPING: YES
     CLANG_ENABLE_MODULES: YES
