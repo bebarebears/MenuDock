@@ -15,6 +15,7 @@ final class AppEnvironment {
     let metrics: MetricsMonitor
     let clipboard: ClipboardCoordinator
     let installedApps: InstalledAppsIndex
+    let space: MenuBarSpaceMonitor
 
     /// `display` is constructed first and injected into the two timer-driven services, so both
     /// answer "can anyone see the menu bar right now?" from the same observers rather than
@@ -27,7 +28,8 @@ final class AppEnvironment {
         animator: IconAnimator? = nil,
         metrics: MetricsMonitor? = nil,
         clipboard: ClipboardCoordinator? = nil,
-        installedApps: InstalledAppsIndex = InstalledAppsIndex()
+        installedApps: InstalledAppsIndex = InstalledAppsIndex(),
+        space: MenuBarSpaceMonitor = MenuBarSpaceMonitor()
     ) {
         self.store = store
         self.icons = icons
@@ -39,5 +41,6 @@ final class AppEnvironment {
         // all is a question about the configuration, not about the screen.
         self.clipboard = clipboard ?? ClipboardCoordinator(store: store, display: display)
         self.installedApps = installedApps
+        self.space = space
     }
 }

@@ -43,6 +43,10 @@ final class MetricsMonitor {
 
     @ObservationIgnored private var subscribers: [UUID: Subscription] = [:]
     @ObservationIgnored private var history: [ActivityMetric: [Double]] = [:]
+    /// The sentence some metrics have to add to their number — what the battery is doing, how
+    /// many gigabytes "18% free" actually is. Kept beside the history rather than folded into it
+    /// because it is text, it is not plottable, and only the menu and the tooltip ever read it.
+    @ObservationIgnored private var details: [ActivityMetric: String] = [:]
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var timerInterval: Double = 0
 
@@ -56,6 +60,19 @@ final class MetricsMonitor {
     @ObservationIgnored private var power: SystemMetrics.PowerSampler?
     @ObservationIgnored private var network: SystemMetrics.NetworkSampler?
     @ObservationIgnored private var disk: SystemMetrics.DiskSampler?
+    @ObservationIgnored private var battery: SystemMetrics.BatterySampler?
+    @ObservationIgnored private var thermal: SystemMetrics.ThermalSampler?
+    @ObservationIgnored private var diskSpace: SystemMetrics.DiskSpaceSampler?
+
+    /// Alive only while an Activity menu that wants it is open. See
+    /// ``setProcessSamplingEnabled(_:onUpdate:)``.
+    @ObservationIgnored private var processes: SystemMetrics.ProcessSampler?
+    @ObservationIgnored private var processUpdate: (() -> Void)?
+    @ObservationIgnored private(set) var topProcesses: [SystemMetrics.ProcessSampler.Entry] = []
+
+    /// How many processes the menu lists. Three is enough to answer "what is eating my battery"
+    /// and short enough that the menu does not become a worse Activity Monitor.
+    static let topProcessCount = 3
 
     private struct Subscription {
         var metrics: Set<ActivityMetric>
@@ -139,6 +156,47 @@ final class MetricsMonitor {
         history[metric]?.last
     }
 
+    /// The sentence that goes beside a metric's number, for the metrics that have one: what the
+    /// battery is doing, how much disk space "18% free" is in gigabytes. `nil` for the rest.
+    func detail(for metric: ActivityMetric) -> String? {
+        details[metric]
+    }
+
+    // MARK: - Processes
+
+    /// Starts or stops sampling per-process CPU.
+    ///
+    /// Called by ``StatusItemController`` around the presentation of an Activity menu, and by
+    /// nothing else. The asymmetry with every other metric here is deliberate and is explained in
+    /// ``SystemMetrics/ProcessSampler``: this one costs a syscall per process on the machine, so
+    /// it runs for the few seconds a menu is open rather than once a second forever.
+    ///
+    /// Switching it on takes the baseline immediately rather than waiting for the next tick, so
+    /// the first real reading arrives one interval after the menu opens instead of two.
+    ///
+    /// - Parameter onUpdate: called after each pass that produced a new list. Deliberately its
+    ///   own callback rather than riding on ``Subscription/tick``: an Activity item with no
+    ///   gauges has no subscription at all, and its menu would sit on "Measuring…" forever.
+    func setProcessSamplingEnabled(_ enabled: Bool, onUpdate: (() -> Void)? = nil) {
+        guard enabled != (processes != nil) else { return }
+        guard enabled else {
+            processes = nil
+            processUpdate = nil
+            topProcesses = []
+            updateTimer()
+            return
+        }
+        let sampler = SystemMetrics.ProcessSampler()
+        _ = sampler.sample(limit: Self.topProcessCount)
+        processes = sampler
+        processUpdate = onUpdate
+        updateTimer()
+    }
+
+    /// True while the process sampler is alive, so the menu can say "Measuring…" rather than
+    /// showing an empty section for the one interval before the first delta exists.
+    var isSamplingProcesses: Bool { processes != nil }
+
     // MARK: - Samplers
 
     private var demandedMetrics: Set<ActivityMetric> {
@@ -158,6 +216,11 @@ final class MetricsMonitor {
         memory = demanded.contains(.memory) ? (memory ?? SystemMetrics.MemorySampler()) : nil
         gpu = demanded.contains(.gpu) ? (gpu ?? SystemMetrics.GPUSampler()) : nil
         power = demanded.contains(.power) ? (power ?? SystemMetrics.PowerSampler()) : nil
+        battery = demanded.contains(.battery) ? (battery ?? SystemMetrics.BatterySampler()) : nil
+        thermal = demanded.contains(.thermal) ? (thermal ?? SystemMetrics.ThermalSampler()) : nil
+        diskSpace = demanded.contains(.diskFree)
+            ? (diskSpace ?? SystemMetrics.DiskSpaceSampler())
+            : nil
 
         let wantsNetwork = demanded.contains(.networkDown) || demanded.contains(.networkUp)
         network = wantsNetwork ? (network ?? SystemMetrics.NetworkSampler()) : nil
@@ -167,6 +230,7 @@ final class MetricsMonitor {
 
         for metric in history.keys where !demanded.contains(metric) {
             history.removeValue(forKey: metric)
+            details.removeValue(forKey: metric)
         }
     }
 
@@ -184,8 +248,14 @@ final class MetricsMonitor {
     /// the same shared history gives it a graph at full resolution for free.
     private var wantedInterval: Double? {
         guard display.isDisplayActive else { return nil }
-        guard let fastest = visibleSubscribers.map(\.interval.seconds).min() else { return nil }
-        return fastest * (display.isLowPowerMode ? 2 : 1)
+        let subscribed = visibleSubscribers.map(\.interval.seconds).min()
+        // An open menu listing processes needs a clock even when nothing is subscribed: an
+        // Activity item with no gauges makes no demand for metrics, and its process list would
+        // otherwise never get a second sample to compute a rate from. One second, because the
+        // list is only up for as long as someone is looking at it.
+        let wanted = processes != nil ? min(subscribed ?? 1, 1) : subscribed
+        guard let wanted else { return nil }
+        return wanted * (display.isLowPowerMode ? 2 : 1)
     }
 
     private func updateTimer() {
@@ -254,6 +324,24 @@ final class MetricsMonitor {
             let reading = disk?.sample()
             record(reading?.read, for: .diskRead)
             record(reading?.written, for: .diskWrite)
+        }
+        if demanded.contains(.battery), let reading = battery?.sample() {
+            record(reading.value, for: .battery)
+            details[.battery] = reading.detail
+        }
+        if demanded.contains(.thermal) {
+            record(thermal?.sample(), for: .thermal)
+        }
+        if demanded.contains(.diskFree), let reading = diskSpace?.sample() {
+            record(reading.value, for: .diskFree)
+            details[.diskFree] = reading.detail
+        }
+
+        // Off the demand-gating path entirely: nothing subscribes to this, an open menu switches
+        // it on directly, and it is the one sampler expensive enough that its absence matters.
+        if let processes, let entries = processes.sample(limit: Self.topProcessCount) {
+            topProcesses = entries
+            processUpdate?()
         }
     }
 

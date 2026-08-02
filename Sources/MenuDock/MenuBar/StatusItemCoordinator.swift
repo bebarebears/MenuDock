@@ -31,6 +31,7 @@ final class StatusItemCoordinator {
     private let animator: IconAnimator
     private let metrics: MetricsMonitor
     private let clipboard: ClipboardCoordinator
+    private let space: MenuBarSpaceMonitor
     private let openSettings: () -> Void
 
     /// Keyed for O(1) diffing; ``liveOrder`` carries the arrangement.
@@ -39,6 +40,8 @@ final class StatusItemCoordinator {
     private var liveOrder: [DockItem.ID] = []
     private var appearanceObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
+    /// True while a space evaluation is already queued, so a burst of reconciles schedules one.
+    private var isSpaceCheckScheduled = false
 
     init(
         store: ConfigurationStore,
@@ -47,6 +50,7 @@ final class StatusItemCoordinator {
         animator: IconAnimator,
         metrics: MetricsMonitor,
         clipboard: ClipboardCoordinator,
+        space: MenuBarSpaceMonitor,
         openSettings: @escaping () -> Void
     ) {
         self.store = store
@@ -55,10 +59,14 @@ final class StatusItemCoordinator {
         self.animator = animator
         self.metrics = metrics
         self.clipboard = clipboard
+        self.space = space
         self.openSettings = openSettings
 
         observeAppearanceChanges()
         observeScreenChanges()
+        // A callback rather than observation, deliberately: this object *is* what updates the
+        // space monitor, so observing it would be a cycle. See ``MenuBarSpaceMonitor/onChange``.
+        space.onChange = { [weak self] in self?.reconcile() }
         reconcile()
         observe()
     }
@@ -115,7 +123,16 @@ final class StatusItemCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.invalidateAndRefresh() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // The screen that was measured may no longer be attached, and a menu bar's worth
+                // of geometry from a different display is worse than none — so the baseline goes
+                // rather than being carried across. This is the event the whole auto-hide feature
+                // exists for: undocking is what turns a comfortable setup into an over-budget one.
+                self.space.invalidateMeasurements()
+                self.invalidateAndRefresh()
+                self.scheduleSpaceCheck()
+            }
         }
     }
 
@@ -125,10 +142,18 @@ final class StatusItemCoordinator {
         let configuration = store.configuration
 
         // Narrow the running-app monitor to just what is on screen.
+        //
+        // Over *every* item rather than the visible ones. An app hidden by a profile is still an
+        // app whose running state the user will see the moment they switch back, and re-tracking
+        // the whole set on every profile switch would drop and rebuild the observation for no
+        // gain. The same reasoning — and a much sharper version of it — applies to icon pruning
+        // at the bottom of this method.
         running.track(Set(configuration.items.flatMap(\.referencedApps).map(\.bundleIdentifier)))
         animator.animationEnabled = configuration.preferences.animateIcons
 
-        let desired = configuration.items
+        // Two filters, in this order: what the user chose to see, then what actually fits.
+        let hidden = space.hiddenItemIDs
+        let desired = configuration.profileFilteredItems.filter { !hidden.contains($0.id) }
         let desiredIDs = Set(desired.map(\.id))
         let desiredOrder = desired.map(\.id)
 
@@ -155,7 +180,12 @@ final class StatusItemCoordinator {
             icons: icons,
             running: running,
             openSettings: openSettings,
-            removeItem: { [weak store] id in store?.remove(id: id) }
+            removeItem: { [weak store] id in store?.remove(id: id) },
+            profiles: { [weak store] in
+                guard let store else { return ([], nil) }
+                return (store.configuration.profiles, store.configuration.activeProfileID)
+            },
+            activateProfile: { [weak store] id in store?.activateProfile(id) }
         )
 
         // macOS places each newly created status item to the *left* of this app's existing
@@ -180,9 +210,61 @@ final class StatusItemCoordinator {
 
         // Set aside icon files nothing references any more — but never after a failed load,
         // where "nothing references them" only means "we could not read what does".
+        //
+        // `referencedIconFileNames` covers every item, not the visible ones, and that is
+        // load-bearing: pruning against `desired` would set a user's custom artwork aside the
+        // moment a profile stopped showing its item.
         if !store.didFailToLoad {
             icons.pruneOrphans(keeping: configuration.referencedIconFileNames)
         }
+
+        scheduleSpaceCheck()
+    }
+
+    // MARK: - Space
+
+    /// Re-evaluates the auto-hide decision once the status items have laid out.
+    ///
+    /// Deferred by a hop rather than run inline, because the measurement it depends on is only
+    /// available afterwards: a status item created a microsecond ago has no window yet, and
+    /// asking for its frame would read zero and conclude that MenuDock occupies nothing at all.
+    ///
+    /// This is also where the loop closes, so it is worth stating why it terminates. An
+    /// evaluation may change the hidden set, which reconciles, which schedules another
+    /// evaluation. The second one reaches the same answer because the demand it compares against
+    /// is derived from the model — not from the items currently on screen — and so does not move
+    /// when the answer does. See ``MenuBarSpaceMonitor``.
+    private func scheduleSpaceCheck() {
+        guard store.configuration.preferences.autoHideWhenCrowded || !space.hiddenItemIDs.isEmpty
+        else { return }
+        guard !isSpaceCheckScheduled else { return }
+        isSpaceCheckScheduled = true
+
+        Task { @MainActor [weak self] in
+            self?.isSpaceCheckScheduled = false
+            self?.evaluateSpace()
+        }
+    }
+
+    private func evaluateSpace() {
+        var layout = MenuBarSpaceMonitor.Layout()
+        for (id, controller) in controllers {
+            layout.widths[id] = controller.measuredWidth
+        }
+        // The rightmost of our items is the one that borders on everybody else's, so it is what
+        // says how much of the bar is already spoken for.
+        for id in liveOrder.reversed() {
+            guard let placement = controllers[id]?.screenPlacement else { continue }
+            layout.rightmostEdge = placement.rightEdge
+            layout.screen = placement.screen
+            break
+        }
+
+        space.evaluate(
+            items: store.configuration.profileFilteredItems,
+            preferences: store.configuration.preferences,
+            layout: layout
+        )
     }
 
     /// Whether the menu bar has to be torn down and rebuilt to match the model's order.

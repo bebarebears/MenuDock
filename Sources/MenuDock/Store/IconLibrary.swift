@@ -30,6 +30,12 @@ final class IconLibrary {
         let size: Double
         let running: Bool
         let showsIndicator: Bool
+        let tint: IconTint?
+        /// Which animation frame this render is of. Always 0 for everything static, which is all
+        /// that reaches this cache from the menu bar — animated glyphs are served from
+        /// ``BuiltinIconCatalog``'s per-icon strips and tinted by ``GlyphLayer`` without being
+        /// re-rendered at all.
+        let frameIndex: Int
     }
 
     /// Ceiling on cached renders before the whole cache is dropped.
@@ -160,40 +166,68 @@ final class IconLibrary {
     ///     48pt preview well must render at 48pt, not at the menu bar's 22pt ceiling.
     ///   - running: whether to draw the running indicator.
     ///   - phase: animation position, 0…1. Ignored for static icons.
+    ///   - tint: a fixed colour for this item, or `nil` for the menu bar's own. Has no effect on
+    ///     artwork that already carries colour — see ``IconRenderer/menuBarImage(from:spec:size:showsRunningDot:tint:)``.
     func image(
         for spec: IconSpec,
         app: AppReference?,
         size: Double,
         running: Bool = false,
         showsIndicator: Bool = false,
-        phase: Double = 0
+        phase: Double = 0,
+        tint: IconTint? = nil
     ) -> NSImage {
-        // Animated built-ins bypass this cache entirely: their frames are cached by index in
+        let builtin = builtinIcon(for: spec)
+        var frameIndex = 0
+
+        // Untinted built-ins bypass this cache entirely: their frames are cached by index in
         // ``BuiltinIconCatalog``, which is both cheaper to look up and shared with the settings
         // previews. Keying 36 frames per icon into a dictionary of hashed `IconSpec`s — as this
         // used to — put string hashing on the hot path of a timer that fires all day.
-        if case .builtin(let id) = spec, let icon = BuiltinIconCatalog.icon(id: id) {
-            return BuiltinIconCatalog.frame(
-                icon: icon,
-                size: size,
-                showsRunningDot: showsIndicator && running,
-                index: icon.isAnimated ? BuiltinIconCatalog.frameIndex(for: phase) : 0
-            )
+        //
+        // A tint has to be composited, so it comes back through the cache below — which stays
+        // small in practice because the only tinted built-ins that reach here are *static* ones.
+        // An animated glyph in the menu bar is drawn by ``GlyphLayer``, which colours a single
+        // masked layer and never asks for a second render.
+        if let icon = builtin {
+            frameIndex = icon.isAnimated ? BuiltinIconCatalog.frameIndex(for: phase) : 0
+            if tint == nil {
+                return BuiltinIconCatalog.frame(
+                    icon: icon,
+                    size: size,
+                    showsRunningDot: showsIndicator && running,
+                    index: frameIndex
+                )
+            }
         }
 
         let key = CacheKey(spec: spec,
                            bundleIdentifier: app?.bundleIdentifier,
                            size: size,
                            running: running,
-                           showsIndicator: showsIndicator)
+                           showsIndicator: showsIndicator,
+                           tint: tint,
+                           frameIndex: frameIndex)
         if let cached = renderCache[key] { return cached }
 
-        let rendered = IconRenderer.menuBarImage(
-            from: sourceImage(for: spec, app: app),
-            spec: spec,
-            size: size,
-            showsRunningDot: showsIndicator && running
-        )
+        let rendered: NSImage
+        if let icon = builtin {
+            rendered = IconRenderer.menuBarImage(
+                builtin: icon,
+                size: size,
+                showsRunningDot: showsIndicator && running,
+                phase: phase,
+                tint: tint
+            )
+        } else {
+            rendered = IconRenderer.menuBarImage(
+                from: sourceImage(for: spec, app: app),
+                spec: spec,
+                size: size,
+                showsRunningDot: showsIndicator && running,
+                tint: tint
+            )
+        }
 
         if renderCache.count >= Self.cacheLimit { renderCache.removeAll(keepingCapacity: true) }
         renderCache[key] = rendered

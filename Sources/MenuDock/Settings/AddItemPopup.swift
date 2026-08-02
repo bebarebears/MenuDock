@@ -120,30 +120,62 @@ struct AddItemPopup: View {
 
     private func row(_ choice: AddItemChoice) -> some View {
         let isDisabled = unavailable.contains(choice)
-        // A disabled row must not highlight on hover: an accent-filled row that does nothing when
-        // clicked reads as a bug rather than as a limit.
-        let isHighlighted = hovered == choice && !isDisabled
 
-        return Button {
-            onChoose(choice)
-        } label: {
+        return ChoiceRow(
+            symbolName: choice.symbolName,
+            title: choice.title,
+            detail: isDisabled ? AddItemChoice.alreadyAddedDetail : choice.detail,
+            isTaken: isDisabled,
+            // A disabled row must not highlight on hover: an accent-filled row that does nothing
+            // when clicked reads as a bug rather than as a limit.
+            isHighlighted: hovered == choice && !isDisabled,
+            action: { onChoose(choice) }
+        )
+        .help(isDisabled ? "\(choice.title.dropFirst(4)) can only be added once." : "")
+        .onHover { isInside in
+            hovered = isInside ? choice : (hovered == choice ? nil : hovered)
+        }
+    }
+}
+
+// MARK: - Shared row
+
+/// One row of a MenuDock-drawn popup: symbol, title, a line of detail, and a tick on anything
+/// already taken.
+///
+/// Shared by ``AddItemPopup`` and ``MetricPicker`` rather than written twice, because the two are
+/// meant to be the same control applied to different lists — a user who has learned that a ticked,
+/// dimmed row means "you already have one" has learned it for both. Two copies would keep that
+/// promise only until one of them was next edited.
+struct ChoiceRow: View {
+    let symbolName: String
+    let title: String
+    let detail: String
+    /// Dims the row and adds a checkmark. Also disables it — a taken choice is shown rather than
+    /// hidden, so the list does not change shape between openings.
+    let isTaken: Bool
+    let isHighlighted: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
             HStack(spacing: 9) {
-                Image(systemName: choice.symbolName)
+                Image(systemName: symbolName)
                     .font(.system(size: 12.5))
-                    .frame(width: 18)
+                    .frame(width: 19)
                     .foregroundStyle(isHighlighted ? .white : .secondary)
 
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(choice.title)
+                    Text(title)
                         .font(.system(size: 13))
-                    Text(isDisabled ? AddItemChoice.alreadyAddedDetail : choice.detail)
+                    Text(detail)
                         .font(.system(size: 10.5))
                         .foregroundStyle(isHighlighted ? .white.opacity(0.75) : .secondary)
                 }
 
                 Spacer(minLength: 0)
 
-                if isDisabled {
+                if isTaken {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -152,7 +184,7 @@ struct AddItemPopup: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .foregroundStyle(isHighlighted ? .white : .primary)
-            .opacity(isDisabled ? 0.45 : 1)
+            .opacity(isTaken ? 0.45 : 1)
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(isHighlighted ? Color.accentColor : .clear)
@@ -160,10 +192,6 @@ struct AddItemPopup: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .help(isDisabled ? "\(choice.title.dropFirst(4)) can only be added once." : "")
-        .onHover { isInside in
-            hovered = isInside ? choice : (hovered == choice ? nil : hovered)
-        }
+        .disabled(isTaken)
     }
 }

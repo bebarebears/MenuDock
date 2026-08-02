@@ -3,7 +3,7 @@ import AppKit
 /// Draws an Activity item's gauges into a single menu bar image, and works out how wide that
 /// image has to be.
 ///
-/// ## Everything is one template mask
+/// ## By default, everything is one template mask
 ///
 /// The output is black-on-transparent and flagged as a template, so the menu bar tints it the
 /// same way it tints every other status item — one code path for Light, Dark, tinted wallpapers,
@@ -11,6 +11,22 @@ import AppKit
 /// fill is the same black as its stroke at a quarter of the opacity, and a bar's empty track is
 /// that same black fainter still. This is the one drawing technique that guarantees an Activity
 /// item never looks out of place next to the clock.
+///
+/// ## One coloured gauge changes the mode of every gauge beside it
+///
+/// A gauge set to ``GaugeColoring/byLoad`` cannot be part of a template image: a template is
+/// reduced to its alpha, so every colour in it is discarded by definition. The moment any gauge
+/// in an item asks for colour, therefore, the *whole strip* stops being a template — and the
+/// monochrome gauges sharing it, which were relying on AppKit to colour them, have to be given a
+/// colour explicitly. That is what the `tint` and `appearance` parameters are for: the first says
+/// what the user chose, the second says which `labelColor` means, since a dynamic colour resolved
+/// against the app's appearance is not necessarily the one the menu bar is using.
+///
+/// Two consequences follow, and both are paid for elsewhere. The item no longer tracks Light and
+/// Dark for free, so ``StatusItemCoordinator`` redraws it when the system appearance changes; and
+/// it no longer inverts under an open menu, so a coloured gauge keeps its colour against the
+/// selection fill. The second is a real if minor loss, and it is why ``GaugeColoring/monochrome``
+/// is the default rather than merely the older behaviour.
 ///
 /// ## Width is derived, never guessed
 ///
@@ -104,7 +120,14 @@ enum ActivityRenderer {
         case .graph: height * Layout.graphWidth
         case .bar: height * Layout.barWidth
         case .ring: height * Layout.ringWidth
-        case .number: valueSize(gauge.metric.widestCompactString, height: height).width
+        // The widest of every string the metric could print, not of the one it is printing. The
+        // level metrics print *words*, which are not monospaced, so this is a measurement over a
+        // handful of candidates rather than a lookup of one — see
+        // ``ActivityMetric/widestCompactStrings``.
+        case .number:
+            gauge.metric.widestCompactStrings
+                .map { valueSize($0, height: height).width }
+                .max() ?? 0
         }
     }
 
@@ -178,42 +201,100 @@ enum ActivityRenderer {
 
     // MARK: - Drawing
 
+    /// Draws the whole strip.
+    ///
+    /// - Parameters:
+    ///   - tint: the item's fixed colour, used only when the image cannot be a template. When it
+    ///     can, the tint is applied far more cheaply by ``GlyphLayer``, which masks a single
+    ///     coloured layer and never re-renders.
+    ///   - appearance: whose `labelColor` to resolve against. Pass the status item button's, not
+    ///     the app's: a translucent menu bar over a light wallpaper can be in the opposite
+    ///     appearance from the window the settings pane is in.
     static func image(
         for entry: ActivityEntry,
         readings: [ActivityMetric: Reading],
-        height: Double
+        height: Double,
+        tint: IconTint? = nil,
+        appearance: NSAppearance? = nil
     ) -> NSImage {
         let canvas = size(for: entry, height: height)
+        // One coloured gauge is enough to take the whole strip out of template rendering; see the
+        // note at the top of this file.
+        let isTemplate = !entry.hasColouredGauge
 
         let image = BitmapCompositor.compose(size: NSSize(width: canvas.width, height: canvas.height)) {
-            var x = height * Layout.edgeInset
+            withDrawingAppearance(appearance) {
+                var x = height * Layout.edgeInset
 
-            for gauge in entry.gauges {
-                let reading = readings[gauge.metric] ?? Reading()
+                for gauge in entry.gauges {
+                    let reading = readings[gauge.metric] ?? Reading()
+                    let ink = ink(for: gauge, reading: reading, tint: tint, isTemplate: isTemplate)
 
-                if let caption = gauge.label.text(for: gauge.metric) {
-                    let size = captionSize(caption, height: height)
-                    draw(text: caption,
-                         font: captionFont(height: height),
-                         alpha: Layout.captionAlpha,
-                         at: CGPoint(x: x, y: (height - size.height) / 2))
-                    x += size.width + height * Layout.captionGap
+                    if let caption = gauge.label.text(for: gauge.metric) {
+                        let size = captionSize(caption, height: height)
+                        draw(text: caption,
+                             font: captionFont(height: height),
+                             colour: ink.at(Layout.captionAlpha),
+                             at: CGPoint(x: x, y: (height - size.height) / 2))
+                        x += size.width + height * Layout.captionGap
+                    }
+
+                    let width = visualWidth(for: gauge, height: height)
+                    let frame = CGRect(x: x, y: 0, width: width, height: height)
+                    draw(gauge: gauge, reading: reading, ink: ink, in: frame, height: height)
+                    x += width + height * Layout.gap
                 }
-
-                let width = visualWidth(for: gauge, height: height)
-                let frame = CGRect(x: x, y: 0, width: width, height: height)
-                draw(gauge: gauge, reading: reading, in: frame, height: height)
-                x += width + height * Layout.gap
             }
         }
 
-        image.isTemplate = true
+        image.isTemplate = isTemplate
         return image
+    }
+
+    /// One gauge's colour, and the alpha levels its supporting parts are drawn at.
+    ///
+    /// Everything in a gauge is the *same* colour at different opacities — the track behind a bar
+    /// is its own fill made faint, not a second grey. That is what keeps a coloured gauge reading
+    /// as one object rather than as two overlapping ones, and it is why this is a single colour
+    /// rather than a palette.
+    private struct Ink {
+        let colour: NSColor
+        func at(_ alpha: Double) -> NSColor {
+            alpha >= 1 ? colour : colour.withAlphaComponent(alpha)
+        }
+    }
+
+    private static func ink(
+        for gauge: ActivityGauge,
+        reading: Reading,
+        tint: IconTint?,
+        isTemplate: Bool
+    ) -> Ink {
+        // A template is reduced to its alpha mask, so the colour here is only ever a carrier for
+        // opacity. Black keeps the arithmetic honest and matches what every other icon does.
+        guard !isTemplate else { return Ink(colour: .black) }
+
+        if gauge.coloring == .byLoad, let current = reading.current {
+            return Ink(colour: gauge.metric.severity(for: current).color)
+        }
+        // No reading yet, or a monochrome gauge sharing a strip that had to go colour: the item's
+        // own tint if it has one, and otherwise the colour the menu bar would have used anyway.
+        return Ink(colour: tint?.color ?? .labelColor)
+    }
+
+    /// Resolves dynamic colours against a specific appearance for the duration of `draw`.
+    ///
+    /// Without this, `labelColor` and the severity colours resolve against `NSApp`'s appearance,
+    /// which is the settings window's rather than the menu bar's.
+    private static func withDrawingAppearance(_ appearance: NSAppearance?, _ draw: () -> Void) {
+        guard let appearance else { return draw() }
+        appearance.performAsCurrentDrawingAppearance(draw)
     }
 
     private static func draw(
         gauge: ActivityGauge,
         reading: Reading,
+        ink: Ink,
         in frame: CGRect,
         height: Double
     ) {
@@ -224,13 +305,13 @@ enum ActivityRenderer {
 
         switch gauge.style {
         case .graph:
-            drawGraph(reading.series, ceiling: ceiling, in: frame, height: height)
+            drawGraph(reading.series, ceiling: ceiling, ink: ink, in: frame, height: height)
         case .bar:
-            drawBar(reading.current.map { $0 / ceiling }, in: frame, height: height)
+            drawBar(reading.current.map { $0 / ceiling }, ink: ink, in: frame, height: height)
         case .ring:
-            drawRing(reading.current.map { $0 / ceiling }, in: frame, height: height)
+            drawRing(reading.current.map { $0 / ceiling }, ink: ink, in: frame, height: height)
         case .number:
-            drawNumber(reading.current, metric: gauge.metric, in: frame, height: height)
+            drawNumber(reading.current, metric: gauge.metric, ink: ink, in: frame, height: height)
         }
     }
 
@@ -259,6 +340,7 @@ enum ActivityRenderer {
     private static func drawGraph(
         _ series: [Double],
         ceiling: Double,
+        ink: Ink,
         in frame: CGRect,
         height: Double
     ) {
@@ -270,7 +352,7 @@ enum ActivityRenderer {
             // Nothing to plot yet: a faint baseline, so the gauge reads as "waiting" rather than
             // as a rendering failure or a machine doing literally nothing.
             fill(CGRect(x: plot.minX, y: plot.minY, width: plot.width, height: max(height * 0.06, 0.75)),
-                 alpha: Layout.emptyAlpha, radius: height * 0.03)
+                 colour: ink.at(Layout.emptyAlpha), radius: height * 0.03)
             return
         }
 
@@ -290,7 +372,7 @@ enum ActivityRenderer {
         for index in points.indices { area.line(to: location(index)) }
         area.line(to: CGPoint(x: plot.maxX, y: plot.minY))
         area.close()
-        NSColor.black.withAlphaComponent(Layout.graphFillAlpha).setFill()
+        ink.at(Layout.graphFillAlpha).setFill()
         area.fill()
 
         let line = NSBezierPath()
@@ -300,20 +382,20 @@ enum ActivityRenderer {
         line.lineWidth = max(height * 0.065, 0.9)
         line.lineJoinStyle = .round
         line.lineCapStyle = .round
-        NSColor.black.setStroke()
+        ink.at(1).setStroke()
         line.stroke()
     }
 
     // MARK: Bar
 
-    private static func drawBar(_ fraction: Double?, in frame: CGRect, height: Double) {
+    private static func drawBar(_ fraction: Double?, ink: Ink, in frame: CGRect, height: Double) {
         let inset = height * Layout.verticalInset
         let track = CGRect(x: frame.minX, y: inset,
                            width: frame.width, height: height - inset * 2)
         let radius = frame.width / 2
         let capsule = NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius)
 
-        NSColor.black.withAlphaComponent(Layout.trackAlpha).setFill()
+        ink.at(Layout.trackAlpha).setFill()
         capsule.fill()
 
         guard let fraction, fraction > 0 else { return }
@@ -329,7 +411,7 @@ enum ActivityRenderer {
         // A non-zero reading always shows at least a stub. Rounding a 1% CPU load away to nothing
         // makes the gauge look broken rather than quiet.
         let filled = max(min(max(fraction, 0), 1) * track.height, frame.width)
-        NSColor.black.setFill()
+        ink.at(1).setFill()
         NSBezierPath(rect: CGRect(x: track.minX, y: track.minY,
                                   width: track.width, height: filled)).fill()
 
@@ -338,7 +420,7 @@ enum ActivityRenderer {
 
     // MARK: Ring
 
-    private static func drawRing(_ fraction: Double?, in frame: CGRect, height: Double) {
+    private static func drawRing(_ fraction: Double?, ink: Ink, in frame: CGRect, height: Double) {
         let lineWidth = max(height * 0.115, 1.2)
         let radius = (min(frame.width, height - height * Layout.verticalInset * 2) - lineWidth) / 2
         let centre = CGPoint(x: frame.midX, y: height / 2)
@@ -347,7 +429,7 @@ enum ActivityRenderer {
         let track = NSBezierPath(ovalIn: CGRect(x: centre.x - radius, y: centre.y - radius,
                                                 width: radius * 2, height: radius * 2))
         track.lineWidth = lineWidth
-        NSColor.black.withAlphaComponent(Layout.trackAlpha).setStroke()
+        ink.at(Layout.trackAlpha).setStroke()
         track.stroke()
 
         guard let fraction, fraction > 0 else { return }
@@ -360,7 +442,7 @@ enum ActivityRenderer {
                       startAngle: 90, endAngle: 90 - sweep, clockwise: true)
         arc.lineWidth = lineWidth
         arc.lineCapStyle = .round
-        NSColor.black.setStroke()
+        ink.at(1).setStroke()
         arc.stroke()
     }
 
@@ -369,6 +451,7 @@ enum ActivityRenderer {
     private static func drawNumber(
         _ value: Double?,
         metric: ActivityMetric,
+        ink: Ink,
         in frame: CGRect,
         height: Double
     ) {
@@ -384,21 +467,21 @@ enum ActivityRenderer {
         // the reserved slack merge into the gap before the next gauge.
         draw(text: text,
              font: font,
-             alpha: value == nil ? Layout.emptyAlpha : 1,
+             colour: ink.at(value == nil ? Layout.emptyAlpha : 1),
              at: CGPoint(x: frame.minX, y: (height - size.height) / 2))
     }
 
     // MARK: Primitives
 
-    private static func draw(text: String, font: NSFont, alpha: Double, at point: CGPoint) {
+    private static func draw(text: String, font: NSFont, colour: NSColor, at point: CGPoint) {
         NSAttributedString(string: text, attributes: [
             .font: font,
-            .foregroundColor: NSColor.black.withAlphaComponent(alpha)
+            .foregroundColor: colour
         ]).draw(at: point)
     }
 
-    private static func fill(_ rect: CGRect, alpha: Double, radius: Double) {
-        NSColor.black.withAlphaComponent(alpha).setFill()
+    private static func fill(_ rect: CGRect, colour: NSColor, radius: Double) {
+        colour.setFill()
         NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
     }
 }

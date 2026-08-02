@@ -20,6 +20,13 @@ struct ItemDetailView: View {
                 case .clipboard:
                     clipboardEditor
                 }
+
+                // Shared by every kind, and below the kind-specific parts because they answer a
+                // different question: everything above is *what this item is*, and this is *when
+                // you see it*.
+                Divider()
+                ProfileMembershipSection(environment: environment, item: $item)
+                PrioritySection(environment: environment, item: $item)
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -41,6 +48,7 @@ struct ItemDetailView: View {
                     environment: environment,
                     spec: entryBinding.icon,
                     size: $item.iconSize,
+                    tint: $item.tint,
                     app: entry.app
                 )
             }
@@ -80,6 +88,7 @@ struct ItemDetailView: View {
                     environment: environment,
                     spec: groupBinding.icon,
                     size: $item.iconSize,
+                    tint: $item.tint,
                     app: nil,
                     defaultBuiltinID: "grid"
                 )
@@ -111,6 +120,7 @@ struct ItemDetailView: View {
                     environment: environment,
                     spec: folderBinding.icon,
                     size: $item.iconSize,
+                    tint: $item.tint,
                     app: nil,
                     defaultBuiltinID: "folder"
                 )
@@ -149,6 +159,7 @@ struct ItemDetailView: View {
                     environment: environment,
                     spec: clipboardBinding.icon,
                     size: $item.iconSize,
+                    tint: $item.tint,
                     app: nil,
                     defaultBuiltinID: "clipboard"
                 )
@@ -175,6 +186,7 @@ struct ItemDetailView: View {
             ActivityEditor(
                 environment: environment,
                 entry: activityBinding,
+                tint: $item.tint,
                 height: item.resolvedIconSize(
                     default: environment.store.configuration.preferences.iconSize
                 )
@@ -489,6 +501,89 @@ private struct ApplicationSummary: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
                 .padding(.top, 4)
+            }
+        }
+    }
+}
+
+// MARK: - Profiles
+
+/// Which profiles show this item.
+///
+/// Absent entirely until the user has created a profile. Profiles are a feature you opt into, and
+/// a permanently empty section headed "Profiles" would be a question mark in every item's editor
+/// for the large majority of people who never make one.
+private struct ProfileMembershipSection: View {
+    let environment: AppEnvironment
+    @Binding var item: DockItem
+
+    private var profiles: [Profile] { environment.store.configuration.profiles }
+
+    var body: some View {
+        if !profiles.isEmpty {
+            SectionBox("Profiles") {
+                ForEach(profiles) { profile in
+                    Toggle(isOn: binding(for: profile)) {
+                        Label(profile.effectiveName, systemImage: profile.symbolName)
+                    }
+                }
+
+                Text(item.profileIDs == nil
+                        ? "Shown in every profile."
+                        : "Shown only in the profiles ticked above.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Goes through the store rather than mutating the binding directly, because switching one
+    /// profile off has to know about all of them — an item's membership starts as "all", and the
+    /// first removal is what turns that into an explicit list. See ``DockItem/setMembership(_:ofProfile:allProfiles:)``.
+    private func binding(for profile: Profile) -> Binding<Bool> {
+        Binding(
+            get: { item.isMember(ofProfile: profile.id) },
+            set: { environment.store.setMembership($0, ofItem: item.id, inProfile: profile.id) }
+        )
+    }
+}
+
+// MARK: - Priority
+
+/// How readily this item gives up its slot when the bar is crowded.
+///
+/// Shown whether or not auto-hiding is switched on, but with a different footnote: setting a
+/// priority in advance is a reasonable thing to do before the situation that needs it, and a
+/// control that appears only once you have flipped a switch in a different tab is a control
+/// nobody finds.
+private struct PrioritySection: View {
+    let environment: AppEnvironment
+    @Binding var item: DockItem
+
+    var body: some View {
+        SectionBox("When the menu bar is full") {
+            Picker("", selection: $item.priority) {
+                ForEach(ItemPriority.allCases) { priority in
+                    Label(priority.displayName, systemImage: priority.symbolName)
+                        .tag(priority)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 300)
+
+            if environment.store.configuration.preferences.autoHideWhenCrowded {
+                Text(item.priority.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("""
+                    \(item.priority.summary) Nothing is hidden yet — switch on “Hide items when \
+                    the menu bar runs out of room” in General first.
+                    """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

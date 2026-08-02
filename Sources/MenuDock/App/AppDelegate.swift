@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             animator: environment.animator,
             metrics: environment.metrics,
             clipboard: environment.clipboard,
+            space: environment.space,
             openSettings: { [weak self] in self?.showSettings() }
         )
 

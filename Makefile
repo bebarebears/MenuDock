@@ -43,6 +43,7 @@ icon:
 activity-sheet:
 	@swiftc -O -swift-version 6 -default-isolation MainActor \
 		Sources/MenuDock/Model/ActivityEntry.swift \
+		Sources/MenuDock/Model/IconTint.swift \
 		Sources/MenuDock/Icons/BitmapCompositor.swift \
 		Sources/MenuDock/Icons/ActivityRenderer.swift \
 		Tools/RenderActivity/main.swift \

@@ -11,6 +11,10 @@ struct MenuBuilder {
     let running: RunningAppsMonitor
     var openSettings: () -> Void
     var removeItem: (DockItem.ID) -> Void
+    /// The profiles that exist and which is active, read fresh each time a menu is built — like
+    /// everything else here, so a profile created a second ago is offered a second later.
+    var profiles: () -> (all: [Profile], active: Profile.ID?) = { ([], nil) }
+    var activateProfile: (Profile.ID?) -> Void = { _ in }
 
     // MARK: - Application items
 
@@ -119,7 +123,9 @@ struct MenuBuilder {
     func activityMenu(
         for entry: ActivityEntry,
         itemID: DockItem.ID,
-        readings: [ActivityMetric: Double?]
+        readings: [ActivityMetric: Double?],
+        details: [ActivityMetric: String] = [:],
+        processes: [SystemMetrics.ProcessSampler.Entry] = []
     ) -> NSMenu {
         let menu = NSMenu()
         menu.addHeader(entry.effectiveTitle)
@@ -149,6 +155,22 @@ struct MenuBuilder {
                 tab: tab
             )
             menu.addItem(item)
+
+            // A second, quieter line for the metrics whose number does not say enough on its
+            // own: what the battery is actually doing, how many gigabytes "18% free" is. Only
+            // battery and free space have one, so most menus gain no rows at all.
+            if let detail = details[metric] {
+                let note = NSMenuItem(title: detail, action: nil, keyEquivalent: "")
+                note.isEnabled = false
+                note.tag = Self.detailRowTag
+                note.representedObject = metric
+                note.attributedTitle = Self.detailTitle(detail)
+                menu.addItem(note)
+            }
+        }
+
+        if entry.showsTopProcesses {
+            appendProcessSection(to: menu, processes: processes)
         }
 
         menu.addItem(.separator())
@@ -160,7 +182,7 @@ struct MenuBuilder {
         return menu
     }
 
-    /// Rewrites the reading rows of an already-open Activity menu.
+    /// Rewrites the live rows of an already-open Activity menu.
     ///
     /// `StatusItemController.present(_:)` blocks on `performClick` for the whole tracking
     /// session, so a menu built once would show the readings frozen at the instant it was
@@ -168,15 +190,156 @@ struct MenuBuilder {
     /// The metrics timer runs in the `.common` run loop mode and therefore keeps firing during
     /// tracking, so the fix is to let that tick reach in here and rewrite the titles; AppKit
     /// redraws an open menu when its items' titles change.
-    static func updateActivityReadings(in menu: NSMenu, value: (ActivityMetric) -> Double?) {
-        let metrics = menu.items.compactMap { $0.representedObject as? ActivityMetric }
-        guard !metrics.isEmpty else { return }
-
-        let tab = readingTabLocation(for: metrics)
-        for item in menu.items {
-            guard let metric = item.representedObject as? ActivityMetric else { continue }
-            item.attributedTitle = readingTitle(metric: metric, value: value(metric), tab: tab)
+    static func updateActivityReadings(
+        in menu: NSMenu,
+        value: (ActivityMetric) -> Double?,
+        detail: (ActivityMetric) -> String? = { _ in nil },
+        processes: [SystemMetrics.ProcessSampler.Entry] = []
+    ) {
+        let metrics = menu.items.compactMap { item -> ActivityMetric? in
+            guard item.tag != detailRowTag else { return nil }
+            return item.representedObject as? ActivityMetric
         }
+
+        if !metrics.isEmpty {
+            let tab = readingTabLocation(for: metrics)
+            for item in menu.items {
+                guard let metric = item.representedObject as? ActivityMetric else { continue }
+                if item.tag == detailRowTag {
+                    // A detail that has gone away — a battery unplugged mid-menu — leaves the row
+                    // in place with its text blanked rather than removing it, because mutating a
+                    // menu's item list while it is being tracked resizes it under the cursor.
+                    item.attributedTitle = detailTitle(detail(metric) ?? " ")
+                } else {
+                    item.attributedTitle = readingTitle(metric: metric, value: value(metric),
+                                                        tab: tab)
+                }
+            }
+        }
+
+        updateProcessRows(in: menu, processes: processes)
+    }
+
+    // MARK: Top processes
+
+    /// Marks the quieter second line under a reading.
+    private static let detailRowTag = 0x4D_44_01
+    /// Base tag for the process rows; the row's index is added to it.
+    private static let processRowTag = 0x4D_44_10
+
+    /// Adds the "what is using the CPU" section, as a fixed number of rows.
+    ///
+    /// **Fixed** matters more than it looks. A menu sizes itself to its widest row when it opens
+    /// and AppKit will happily resize it afterwards, so a section that grew from one row to three
+    /// as the first samples arrived — or whose rows widened when a longer process name took the
+    /// lead — would jump under the cursor a second after the user clicked. So the rows are all
+    /// created up front, the value is pinned to a tab stop, and the name is truncated to a fixed
+    /// budget rather than being allowed to set the menu's width.
+    private func appendProcessSection(
+        to menu: NSMenu,
+        processes: [SystemMetrics.ProcessSampler.Entry]
+    ) {
+        menu.addItem(.separator())
+        menu.addHeader("Using the most CPU")
+
+        for index in 0..<MetricsMonitor.topProcessCount {
+            let row = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            row.isEnabled = false
+            row.tag = Self.processRowTag + index
+            row.attributedTitle = Self.processTitle(
+                processes.indices.contains(index) ? processes[index] : nil,
+                isFirstRow: index == 0
+            )
+            menu.addItem(row)
+        }
+    }
+
+    private static func updateProcessRows(
+        in menu: NSMenu,
+        processes: [SystemMetrics.ProcessSampler.Entry]
+    ) {
+        for item in menu.items {
+            let index = item.tag - processRowTag
+            guard index >= 0, index < MetricsMonitor.topProcessCount else { continue }
+            item.attributedTitle = processTitle(
+                processes.indices.contains(index) ? processes[index] : nil,
+                isFirstRow: index == 0
+            )
+        }
+    }
+
+    /// One process row: a truncated name, then its share of a core on a tab stop.
+    ///
+    /// The share is expressed the way Activity Monitor expresses it — 100% is one core, so a
+    /// process saturating four of them reads as 400%. That is unintuitive the first time and
+    /// correct every time after, and inventing a different convention for the same number in a
+    /// menu that offers to open Activity Monitor would be worse.
+    private static func processTitle(
+        _ entry: SystemMetrics.ProcessSampler.Entry?,
+        isFirstRow: Bool
+    ) -> NSAttributedString {
+        let font = NSFont.menuFont(ofSize: 0)
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [NSTextTab(textAlignment: .right, location: processTabLocation)]
+
+        guard let entry else {
+            // Only the first row explains itself. Three identical "Measuring…" lines would read
+            // as three things happening rather than one.
+            let text = isFirstRow ? "Measuring…" : " "
+            return NSAttributedString(string: text, attributes: [
+                .font: font,
+                .paragraphStyle: style,
+                .foregroundColor: NSColor.tertiaryLabelColor,
+            ])
+        }
+
+        let digits = NSFont.monospacedDigitSystemFont(ofSize: font.pointSize, weight: .regular)
+        let result = NSMutableAttributedString(
+            string: "\(truncate(entry.name, to: processNameBudget, font: font))\t",
+            attributes: [.font: font, .paragraphStyle: style]
+        )
+        result.append(NSAttributedString(
+            string: String(format: "%.1f%%", entry.share * 100),
+            attributes: [
+                .font: digits,
+                .paragraphStyle: style,
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        ))
+        return result
+    }
+
+    /// Points allowed for a process name before it is truncated.
+    private static let processNameBudget: CGFloat = 190
+
+    private static var processTabLocation: CGFloat {
+        let font = NSFont.menuFont(ofSize: 0)
+        let digits = NSFont.monospacedDigitSystemFont(ofSize: font.pointSize, weight: .regular)
+        let widest = "9999.9%".size(withAttributes: [.font: digits]).width
+        return (processNameBudget + 24 + widest).rounded(.up)
+    }
+
+    /// Shortens a name to fit a pixel budget, with an ellipsis.
+    ///
+    /// By measurement rather than by character count, because "Google Chrome Helper (Renderer)"
+    /// and "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW" are the same length and nothing like the same width.
+    private static func truncate(_ name: String, to budget: CGFloat, font: NSFont) -> String {
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        guard name.size(withAttributes: attributes).width > budget else { return name }
+
+        var trimmed = name
+        while !trimmed.isEmpty,
+              (trimmed + "…").size(withAttributes: attributes).width > budget {
+            trimmed.removeLast()
+        }
+        return trimmed + "…"
+    }
+
+    private static func detailTitle(_ text: String) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
     }
 
     /// One reading row: the metric's name, then its value right-aligned on a tab stop.
@@ -222,8 +385,10 @@ struct MenuBuilder {
             .map { $0.displayName.size(withAttributes: [.font: font]).width }
             .max() ?? 0
         // Not the current values: the point is a column that cannot move, so it is measured
-        // against the longest string `verboseString` is capable of returning, for every unit.
-        let widestValue = ["100.0%", "999.99 GB/s", "999.9 W"]
+        // against the longest string `verboseString` is capable of returning, for every unit —
+        // including the level unit, whose values are words rather than numbers.
+        let widestValue = (["100.0%", "999.99 GB/s", "999.9 W"]
+            + ThermalLevel.allCases.map(\.displayName))
             .map { $0.size(withAttributes: [.font: digits]).width }
             .max() ?? 0
 
@@ -416,6 +581,7 @@ struct MenuBuilder {
     private func appendManagementSection(to menu: NSMenu, itemID: DockItem.ID, removeTitle: String) {
         menu.addItem(.separator())
         menu.addAction(removeTitle) { removeItem(itemID) }
+        appendProfileSection(to: menu)
         menu.addItem(.separator())
         menu.addAction("MenuDock Settings…", keyEquivalent: ",", modifiers: .command) {
             openSettings()
@@ -423,5 +589,40 @@ struct MenuBuilder {
         menu.addAction("Quit MenuDock", keyEquivalent: "q", modifiers: .command) {
             NSApp.terminate(nil)
         }
+    }
+
+    /// The profile switcher, on every item's menu.
+    ///
+    /// On *every* item rather than on one designated switcher, because there is no designated
+    /// item — a menu bar may hold nothing but apps, and the whole point of a profile is that the
+    /// item you would have put the switcher on might be the one it hides. Absent entirely until a
+    /// profile exists, so nobody who has not asked for the feature ever sees it.
+    ///
+    /// A submenu rather than inline rows: the management section is already four rows long, and
+    /// six profiles would make the ordinary "remove this / open settings" menu twice its size.
+    private func appendProfileSection(to menu: NSMenu) {
+        let (all, active) = profiles()
+        guard !all.isEmpty else { return }
+
+        menu.addItem(.separator())
+
+        let submenu = NSMenu()
+        let everything = submenu.addAction("All Items") { activateProfile(nil) }
+        everything.state = active == nil ? .on : .off
+
+        submenu.addItem(.separator())
+        for profile in all {
+            let row = submenu.addAction(profile.effectiveName,
+                                        image: NSImage(systemSymbolName: profile.symbolName,
+                                                       accessibilityDescription: nil)) {
+                activateProfile(profile.id)
+            }
+            row.state = profile.id == active ? .on : .off
+        }
+
+        let title = all.first { $0.id == active }?.effectiveName ?? "All Items"
+        let row = NSMenuItem(title: "Profile: \(title)", action: nil, keyEquivalent: "")
+        row.submenu = submenu
+        menu.addItem(row)
     }
 }

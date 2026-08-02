@@ -36,6 +36,15 @@ func series(_ kind: ActivityMetric) -> [Double] {
             values.append(step % 17 < 3 ? Double.random(in: 2e7...9e7) : Double.random(in: 0...5e5))
         case .diskWrite:
             values.append(step % 23 < 5 ? Double.random(in: 1e8...4e8) : 0)
+        case .battery:
+            // Draining slowly, which is what a battery gauge looks like for all but a few
+            // minutes of its life.
+            values.append(0.62 - time * 0.04)
+        case .thermal:
+            // Nominal, then a spell of `fair` under the same load spike the CPU series has.
+            values.append(step > 38 && step < 50 ? ThermalLevel.fair.rawValue : 0)
+        case .diskFree:
+            values.append(0.31)
         }
     }
     return values
@@ -54,7 +63,12 @@ func readings(for metrics: [ActivityMetric]) -> [ActivityMetric: ActivityRendere
 
 /// Reproduces what the menu bar does to a template image: use its alpha as a mask over a solid
 /// colour. Without this the sheet would show black-on-black in the Dark panel.
+///
+/// **Only for template images.** A strip carrying a load-coloured gauge is not one — it has
+/// already resolved its own colours — and masking it here would flatten every one of them to the
+/// single ink colour, which is exactly the thing that row exists to show. See `ActivityRenderer`.
 func tinted(_ image: NSImage, colour: NSColor) -> NSImage {
+    guard image.isTemplate else { return image }
     let output = NSImage(size: image.size)
     output.lockFocus()
     colour.set()
@@ -103,8 +117,28 @@ let rows: [Row] = [
             ActivityGauge(metric: .networkDown, style: .number, label: .short),
             ActivityGauge(metric: .networkUp, style: .number, label: .short)
         ])),
-    Row(caption: "Everything at once",
-        entry: ActivityEntry(gauges: allMetrics.map {
+    Row(caption: "Coloured by load — quiet, busy, critical",
+        entry: ActivityEntry(gauges: [
+            ActivityGauge(metric: .cpu, style: .graph, label: .short, coloring: .byLoad),
+            ActivityGauge(metric: .memory, style: .bar, label: .short, coloring: .byLoad),
+            ActivityGauge(metric: .battery, style: .ring, label: .short, coloring: .byLoad),
+            ActivityGauge(metric: .diskFree, style: .number, label: .short, coloring: .byLoad)
+        ])),
+    Row(caption: "Battery, thermal, free space",
+        entry: ActivityEntry(gauges: [
+            ActivityGauge(metric: .battery, style: .ring, label: .short),
+            ActivityGauge(metric: .thermal, style: .number, label: .short),
+            ActivityGauge(metric: .diskFree, style: .bar, label: .short)
+        ])),
+    // Split in two rather than one row of eleven: the sheet's width is set by its widest strip,
+    // and a single row holding every metric made the whole image three times taller than it is
+    // useful for — the other fourteen rows shrink to nothing beside it in the README.
+    Row(caption: "Every metric (1 of 2)",
+        entry: ActivityEntry(gauges: allMetrics.prefix(6).map {
+            ActivityGauge(metric: $0, style: .graph, label: .short)
+        })),
+    Row(caption: "Every metric (2 of 2)",
+        entry: ActivityEntry(gauges: allMetrics.dropFirst(6).map {
             ActivityGauge(metric: $0, style: .graph, label: .short)
         }))
 ]
@@ -161,7 +195,15 @@ func drawPanel(origin: CGPoint, dark: Bool) {
         ]).draw(at: CGPoint(x: origin.x + panelPadding, y: y + rowHeight / 2 - 7))
 
         for (index, height) in heights.enumerated() {
-            let image = ActivityRenderer.image(for: row.entry, readings: data, height: height)
+            // The panel's own appearance, not the app's. A load-coloured gauge resolves a dynamic
+            // colour, so without this both panels would draw the *same* variant — and the whole
+            // point of a two-panel sheet is to show what each one actually looks like.
+            let image = ActivityRenderer.image(
+                for: row.entry,
+                readings: data,
+                height: height,
+                appearance: NSAppearance(named: dark ? .darkAqua : .aqua)
+            )
             let stamped = tinted(image, colour: ink)
             let x = origin.x + panelPadding + captionWidth + columnWidth * CGFloat(index)
             stamped.draw(in: NSRect(x: x,

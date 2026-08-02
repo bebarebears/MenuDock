@@ -84,6 +84,10 @@ struct MenuBarItemsView: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
+            if !store.configuration.profiles.isEmpty {
+                ProfileBar(environment: environment)
+                Divider()
+            }
             List(selection: $selection) {
                 ForEach(store.configuration.items) { item in
                     ItemRow(environment: environment, item: item)
@@ -274,11 +278,63 @@ struct MenuBarItemsView: View {
     }
 }
 
+// MARK: - Profile bar
+
+/// The active-profile switcher, above the item list.
+///
+/// Sits here rather than in the General tab because this is the list it filters, and a control
+/// that changes what a list contains belongs beside the list. It appears only once a profile
+/// exists — see ``ProfileMembershipSection`` for the same reasoning applied to the item editor.
+private struct ProfileBar: View {
+    let environment: AppEnvironment
+
+    private var store: ConfigurationStore { environment.store }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Picker("", selection: Binding(
+                get: { store.configuration.activeProfileID },
+                set: { store.activateProfile($0) }
+            )) {
+                Label("All Items", systemImage: "square.stack.3d.up.fill")
+                    .tag(Profile.ID?.none)
+                Divider()
+                ForEach(store.configuration.profiles) { profile in
+                    Label(profile.effectiveName, systemImage: profile.symbolName)
+                        .tag(Profile.ID?.some(profile.id))
+                }
+            }
+            .labelsHidden()
+
+            let hidden = store.configuration.itemsHiddenByProfile
+            if hidden > 0 {
+                Text("\(hidden) hidden")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Items not in this profile stay in the list, dimmed.")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+}
+
 // MARK: - Sidebar row
 
 private struct ItemRow: View {
     let environment: AppEnvironment
     let item: DockItem
+
+    /// Whether this item is on the menu bar right now, given the active profile and auto-hiding.
+    ///
+    /// A hidden item stays in the list, dimmed, rather than disappearing from it. The list is
+    /// where the whole setup is edited, and a profile that removed items from *the editor* as
+    /// well as from the bar would leave the user no way to put them back.
+    private var isShowing: Bool {
+        item.isMember(ofProfile: environment.store.configuration.activeProfileID)
+            && !environment.space.hiddenItemIDs.contains(item.id)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -289,7 +345,8 @@ private struct ItemRow: View {
                 app: item.referencedApps.first,
                 size: item.resolvedIconSize(
                     default: environment.store.configuration.preferences.iconSize
-                )
+                ),
+                tint: item.tint
             ))
             .frame(width: IconRenderer.maximumIconSize, height: IconRenderer.maximumIconSize)
 
@@ -297,6 +354,15 @@ private struct ItemRow: View {
                 .lineLimit(1)
 
             Spacer(minLength: 4)
+
+            if !isShowing {
+                Image(systemName: "eye.slash")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .help(item.isMember(ofProfile: environment.store.configuration.activeProfileID)
+                            ? "Hidden — the menu bar has run out of room"
+                            : "Not in the active profile")
+            }
 
             switch item.kind {
             case .group:
@@ -324,6 +390,7 @@ private struct ItemRow: View {
             }
         }
         .padding(.vertical, 2)
+        .opacity(isShowing ? 1 : 0.45)
     }
 
     private func countBadge(_ count: Int) -> some View {
@@ -411,6 +478,32 @@ struct GeneralSettingsView: View {
                 }
             }
 
+            Section("Menu Bar Space") {
+                Toggle(
+                    "Hide items when the menu bar runs out of room",
+                    isOn: store.binding(\.preferences.autoHideWhenCrowded)
+                )
+
+                Text("""
+                    A 14" MacBook has roughly a third the usable menu bar of a large display once \
+                    the notch and the app menus have taken their share, so a setup that fits \
+                    docked may not fit undocked. With this on, MenuDock drops its lowest-priority \
+                    items rather than letting macOS silently clip whichever happens to be \
+                    leftmost. Each item's priority is set in its own pane.
+                    """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if store.configuration.preferences.autoHideWhenCrowded {
+                    SpaceVerdictLine(environment: environment)
+                }
+            }
+
+            Section("Profiles") {
+                ProfileEditor(environment: environment)
+            }
+
             Section {
                 LabeledContent("Configuration") {
                     Button("Show in Finder") {
@@ -432,5 +525,165 @@ struct GeneralSettingsView: View {
         .onChange(of: store.configuration.preferences.iconSize) { _, _ in
             environment.icons.invalidateCache(includingAnimationFrames: true)
         }
+    }
+}
+
+// MARK: - Space verdict
+
+/// What the last auto-hide evaluation concluded, in words.
+///
+/// A feature that removes things from the menu bar has to be able to say what it did and why. The
+/// figures are the ones the decision was actually made on — see ``MenuBarSpaceMonitor`` — so if
+/// they look wrong the user has something concrete to disbelieve rather than a vanished icon.
+private struct SpaceVerdictLine: View {
+    let environment: AppEnvironment
+
+    var body: some View {
+        // The verdict is recomputed on screen changes and edits, not on a timer, so this reads
+        // whatever the last reconcile concluded.
+        if let verdict = environment.space.lastVerdict {
+            if verdict.isOverBudgetRegardless {
+                Label(
+                    """
+                    Even the items marked “Always show” do not fit — \(points(verdict.wanted)) \
+                    wanted, \(points(verdict.available)) available. macOS will clip one of them.
+                    """,
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            } else if verdict.hiddenCount > 0 {
+                Label(
+                    """
+                    \(verdict.hiddenCount == 1 ? "1 item is" : "\(verdict.hiddenCount) items are") \
+                    hidden to fit \(points(verdict.wanted)) of items into \
+                    \(points(verdict.available)).
+                    """,
+                    systemImage: "eye.slash"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Label(
+                    "Everything fits — \(points(verdict.wanted)) of \(points(verdict.available)) used.",
+                    systemImage: "checkmark.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func points(_ value: Double) -> String {
+        "\(Int(value.rounded())) pt"
+    }
+}
+
+// MARK: - Profiles
+
+/// Create, rename, re-symbol and delete profiles.
+///
+/// The empty state carries the whole explanation, because a list with an + button under a heading
+/// saying "Profiles" tells a first-time reader nothing about what a profile *is* in this app —
+/// and the answer here ("a subset of your items", not "a separate menu bar") is not the one they
+/// would guess.
+private struct ProfileEditor: View {
+    let environment: AppEnvironment
+
+    @State private var selection: Profile.ID?
+
+    private var store: ConfigurationStore { environment.store }
+    private var profiles: [Profile] { store.configuration.profiles }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if profiles.isEmpty {
+                Text("""
+                    A profile is a named subset of your menu bar — “Work”, “Personal”, \
+                    “Presenting”. Items belong to as many as you like, and switching profiles \
+                    shows and hides them without changing anything else about them.
+                    """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                List(selection: $selection) {
+                    ForEach(profiles) { profile in
+                        row(profile)
+                            .tag(profile.id)
+                    }
+                }
+                .listStyle(.bordered)
+                .frame(height: 116)
+
+                Text("""
+                    A new profile starts with every item in it. Remove what you do not want from \
+                    each item's own pane.
+                    """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    selection = store.addProfile()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help("Add a profile")
+
+                Button {
+                    if let selection { store.removeProfile(id: selection) }
+                    selection = nil
+                } label: {
+                    Image(systemName: "minus")
+                }
+                .disabled(selection == nil)
+                .help("Delete the selected profile")
+
+                Spacer()
+            }
+        }
+    }
+
+    private func row(_ profile: Profile) -> some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(Profile.symbolChoices, id: \.self) { symbol in
+                    Button {
+                        store.setProfileSymbol(id: profile.id, to: symbol)
+                    } label: {
+                        Label(symbol, systemImage: symbol)
+                    }
+                }
+            } label: {
+                Image(systemName: profile.symbolName)
+                    .frame(width: 18)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Choose an icon")
+
+            TextField("Profile name", text: Binding(
+                get: { profile.name },
+                set: { store.renameProfile(id: profile.id, to: $0) }
+            ))
+            .textFieldStyle(.plain)
+
+            if store.configuration.activeProfileID == profile.id {
+                Text("Active")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Switch") { store.activateProfile(profile.id) }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+        }
+        .padding(.vertical, 1)
     }
 }

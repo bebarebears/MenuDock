@@ -59,6 +59,9 @@ final class GlyphLayer {
 
     private var installedFrame: CGRect = .zero
     private var installedTint: CGColor?
+    /// Which of the two modes described on ``show(_:size:isHighlighted:colour:)`` the layer is
+    /// currently in, so the switch between them happens once rather than on every frame.
+    private var isShowingColourImage = false
 
     // MARK: - Attachment
 
@@ -75,7 +78,12 @@ final class GlyphLayer {
     /// Hands presentation back to `button.image`, for an item whose icon is no longer animated.
     func clear() {
         tint.isHidden = true
+        tint.contents = nil
         mask.contents = nil
+        if isShowingColourImage {
+            isShowingColourImage = false
+            tint.mask = mask
+        }
         spacer = nil
         spacerSize = .zero
     }
@@ -87,11 +95,26 @@ final class GlyphLayer {
     /// Puts one rendered frame on screen. This is the hot path — everything it can skip, it does.
     ///
     /// - Parameters:
-    ///   - frame: a rendered glyph, black-on-transparent, used only as a mask.
+    ///   - frame: a rendered glyph. Used as a mask when it is a template image, and shown as-is
+    ///     when it is not — see the note on colour below.
     ///   - size: the point size the frame was rendered at. Square for an icon; as wide as it
     ///     needs to be for an Activity item's row of gauges.
     ///   - isHighlighted: true while the item's menu is open, when the glyph must invert.
-    func show(_ frame: NSImage, size: CGSize, isHighlighted: Bool) {
+    ///   - colour: a fixed colour for a template frame, or `nil` for the menu bar's own. Applying
+    ///     it here rather than in the render is nearly free — it sets one layer property instead
+    ///     of rasterising a new bitmap — so a tinted animated glyph costs exactly what an
+    ///     untinted one does.
+    ///
+    /// ## Two modes, decided by the frame itself
+    ///
+    /// A **template** frame is a mask: the layer holds a flat colour and the frame's alpha cuts
+    /// the shape out of it. That is the cheap path and the one every icon takes.
+    ///
+    /// A frame that is *not* a template already contains the colours it wants — an Activity strip
+    /// with a load-coloured gauge in it — so there is nothing to tint and masking it would throw
+    /// its colour away. It goes straight into the layer's contents instead. What is lost is the
+    /// inversion under an open menu, which a multi-coloured image has no single answer for.
+    func show(_ frame: NSImage, size: CGSize, isHighlighted: Bool, colour: IconTint? = nil) {
         guard let button else { return }
 
         // Sharpest representation, not the one `cgImage(forProposedRect:)` guesses from a
@@ -114,16 +137,42 @@ final class GlyphLayer {
             mask.frame = CGRect(origin: .zero, size: target.size)
         }
 
-        let colour = tintColour(isHighlighted: isHighlighted, appearance: button.effectiveAppearance)
-        if colour != installedTint {
-            installedTint = colour
-            tint.backgroundColor = colour
-        }
-
         // Derived from width, because that is the axis an Activity strip actually varies along;
         // for a square glyph the two are the same number.
-        mask.contentsScale = Double(rep.pixelsWide) / max(size.width, 1)
-        mask.contents = image
+        let scale = Double(rep.pixelsWide) / max(size.width, 1)
+
+        if frame.isTemplate {
+            if isShowingColourImage {
+                isShowingColourImage = false
+                tint.contents = nil
+                tint.mask = mask
+            }
+
+            let resolved = tintColour(isHighlighted: isHighlighted,
+                                      colour: colour,
+                                      appearance: button.effectiveAppearance)
+            if resolved != installedTint {
+                installedTint = resolved
+                tint.backgroundColor = resolved
+            }
+
+            mask.contentsScale = scale
+            mask.contents = image
+        } else {
+            if !isShowingColourImage {
+                isShowingColourImage = true
+                // The mask has to go, not just be ignored: a layer keeps masking its contents
+                // whatever else changes, so leaving it attached would cut the colour image to the
+                // shape of whatever glyph was last shown.
+                tint.mask = nil
+                tint.backgroundColor = nil
+                mask.contents = nil
+                installedTint = nil
+            }
+            tint.contentsScale = scale
+            tint.contents = image
+        }
+
         tint.isHidden = false
     }
 
@@ -141,12 +190,29 @@ final class GlyphLayer {
             .max { $0.pixelsWide < $1.pixelsWide }
     }
 
-    private func tintColour(isHighlighted: Bool, appearance: NSAppearance) -> CGColor {
+    /// The colour a template frame is filled with.
+    ///
+    /// A custom tint loses to the highlighted state on purpose. While a menu is open AppKit fills
+    /// the item with the accent colour, and a dark blue glyph on a blue fill is unreadable — so
+    /// for those few hundred milliseconds every icon inverts, tinted or not, exactly as an
+    /// untinted one would.
+    private func tintColour(
+        isHighlighted: Bool,
+        colour: IconTint?,
+        appearance: NSAppearance
+    ) -> CGColor {
+        if isHighlighted {
+            var resolved = NSColor.selectedMenuItemTextColor.cgColor
+            appearance.performAsCurrentDrawingAppearance {
+                resolved = NSColor.selectedMenuItemTextColor.cgColor
+            }
+            return resolved
+        }
+        if let colour { return colour.color.cgColor }
+
         var resolved = NSColor.labelColor.cgColor
         appearance.performAsCurrentDrawingAppearance {
-            // While a menu is open AppKit fills the item with the selection colour, and a template
-            // image would invert to match. This is that inversion, done by hand.
-            resolved = (isHighlighted ? NSColor.selectedMenuItemTextColor : NSColor.labelColor).cgColor
+            resolved = NSColor.labelColor.cgColor
         }
         return resolved
     }

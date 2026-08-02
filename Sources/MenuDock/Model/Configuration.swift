@@ -21,7 +21,21 @@ nonisolated struct Configuration: Codable, Hashable, Sendable {
     var items: [DockItem] = []
     var preferences: Preferences = Preferences()
 
-    private enum CodingKeys: String, CodingKey { case schemaVersion, items, preferences }
+    /// The named subsets the user has defined. Empty by default — profiles are a feature you opt
+    /// into by creating one, not a concept you have to understand to use the app.
+    var profiles: [Profile] = []
+
+    /// Which profile is showing, or `nil` for "All Items".
+    ///
+    /// Stored in the configuration rather than held in memory because it is a *setting*, not a
+    /// session state: a user who switches to Presenting and closes their laptop expects to still
+    /// be presenting when they open it. It also means the menu bar is correct from the first
+    /// frame after launch rather than settling a moment later.
+    var activeProfileID: Profile.ID?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, items, preferences, profiles, activeProfileID
+    }
 
     init() {}
 
@@ -32,6 +46,16 @@ nonisolated struct Configuration: Codable, Hashable, Sendable {
         items = try container.decodeIfPresent([DockItem].self, forKey: .items) ?? []
         preferences = try container.decodeIfPresent(Preferences.self, forKey: .preferences)
             ?? Preferences()
+        profiles = try container.decodeIfPresent([Profile].self, forKey: .profiles) ?? []
+        activeProfileID = try container.decodeIfPresent(Profile.ID.self, forKey: .activeProfileID)
+
+        // A selected profile that no longer exists — deleted on another Mac, or hand-edited
+        // out — must fall back to "All Items" rather than filtering the menu bar down to the
+        // items belonging to a profile nobody can select. An empty menu bar with no visible cause
+        // is the single worst state this feature can produce.
+        if let activeProfileID, !profiles.contains(where: { $0.id == activeProfileID }) {
+            self.activeProfileID = nil
+        }
 
         // The last line of defence for the one-of-each rule. Settings and the store both refuse
         // to create a second Activity or Clipboard item, but the configuration is a plain JSON
@@ -62,8 +86,18 @@ nonisolated struct Configuration: Codable, Hashable, Sendable {
         /// Master switch for animated built-in icons. Reduce Motion overrides this to off.
         var animateIcons: Bool = true
 
+        /// Drop low-priority items when the menu bar cannot fit them all. See
+        /// ``MenuBarSpaceMonitor``.
+        ///
+        /// Off by default, and it has to be. An item disappearing from the menu bar without
+        /// having been asked to is indistinguishable from a bug — the user's first thought is
+        /// "MenuDock crashed", not "MenuDock made room" — so this is a thing you switch on
+        /// knowingly, having read what it does, rather than something that happens to you the
+        /// first time you undock a laptop.
+        var autoHideWhenCrowded: Bool = false
+
         private enum CodingKeys: String, CodingKey {
-            case showRunningIndicator, iconSize, animateIcons
+            case showRunningIndicator, iconSize, animateIcons, autoHideWhenCrowded
         }
 
         init() {}
@@ -74,14 +108,44 @@ nonisolated struct Configuration: Codable, Hashable, Sendable {
                 .decodeIfPresent(Bool.self, forKey: .showRunningIndicator) ?? true
             iconSize = try container.decodeIfPresent(Double.self, forKey: .iconSize) ?? 18
             animateIcons = try container.decodeIfPresent(Bool.self, forKey: .animateIcons) ?? true
+            autoHideWhenCrowded = try container
+                .decodeIfPresent(Bool.self, forKey: .autoHideWhenCrowded) ?? false
         }
     }
 }
 
 nonisolated extension Configuration {
     /// Every icon-library file referenced by any item, for orphan cleanup.
+    ///
+    /// Deliberately over **every** item and not the visible ones. An item hidden by a profile or
+    /// by auto-hiding still owns its artwork, and pruning against the visible set would move a
+    /// user's custom icon into `Icons/Unused/` the moment they switched profile. See
+    /// ``IconLibrary/pruneOrphans(keeping:)`` for the earlier version of that same mistake.
     var referencedIconFileNames: Set<String> {
         Set(items.flatMap(\.customIconFileNames))
+    }
+
+    /// The active profile, or `nil` when showing everything.
+    var activeProfile: Profile? {
+        profiles.first { $0.id == activeProfileID }
+    }
+
+    /// The items the active profile shows, in menu bar order.
+    ///
+    /// Auto-hiding is *not* applied here — it is a separate, later filter owned by
+    /// ``MenuBarSpaceMonitor``, because it depends on the geometry of the screen rather than on
+    /// anything in this document. Keeping the two apart means the space monitor decides what to
+    /// drop from a list that already reflects the user's choice of profile, which is the only
+    /// order that makes sense: there is no point measuring items the user has already said they
+    /// do not want to see.
+    var profileFilteredItems: [DockItem] {
+        guard activeProfileID != nil else { return items }
+        return items.filter { $0.isMember(ofProfile: activeProfileID) }
+    }
+
+    /// How many items the active profile hides, for the sidebar's status line.
+    var itemsHiddenByProfile: Int {
+        items.count - profileFilteredItems.count
     }
 
     func index(of id: DockItem.ID) -> Int? {

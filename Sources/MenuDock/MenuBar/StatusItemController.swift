@@ -35,6 +35,8 @@ final class StatusItemController {
     private var animatedIcon: BuiltinIcon?
     /// Point size the icon is being drawn at, with this item's override already applied.
     private var renderedSize: Double = 0
+    /// The tint the current frame was drawn with, so a colour change invalidates it.
+    private var renderedTint: IconTint?
     /// Whether the running indicator is part of the rendered frame.
     private var showsRunningDot = false
     /// Last animation frame actually pushed to the button, so a tick that resolves to the same
@@ -186,13 +188,18 @@ final class StatusItemController {
         // so it takes an early exit rather than being threaded through the glyph logic below.
         if let entry = item.activity {
             let newSize = ActivityRenderer.size(for: entry, height: size)
-            if entry != activity || newSize != activitySize {
+            // The tint is compared alongside the entry because it is not *in* the entry: it
+            // lives on the item, and a strip carrying a coloured gauge draws it into the bitmap.
+            // Without this, recolouring an item would leave the last render on screen until some
+            // reading happened to change.
+            if entry != activity || newSize != activitySize || item.tint != renderedTint {
                 lastActivitySignature = nil
             }
             activity = entry
             activitySize = newSize
             animatedIcon = nil
             renderedSize = size
+            renderedTint = item.tint
             showsRunningDot = false
             lastRenderedFrame = nil
             return
@@ -206,12 +213,14 @@ final class StatusItemController {
         let animated = icon?.isAnimated == true ? icon : nil
         let dot = preferences.showRunningIndicator && isRunning
 
-        if animated?.id != animatedIcon?.id || size != renderedSize || dot != showsRunningDot {
+        if animated?.id != animatedIcon?.id || size != renderedSize || dot != showsRunningDot
+            || item.tint != renderedTint {
             lastRenderedFrame = nil
         }
 
         animatedIcon = animated
         renderedSize = size
+        renderedTint = item.tint
         showsRunningDot = dot
     }
 
@@ -329,7 +338,10 @@ final class StatusItemController {
                 index: index
             ),
             size: CGSize(width: renderedSize, height: renderedSize),
-            isHighlighted: isPresentingMenu
+            isHighlighted: isPresentingMenu,
+            // The frames themselves stay untinted and shared: the colour is a layer property, so
+            // an item's tint costs one assignment rather than a second copy of the whole loop.
+            colour: item.tint
         )
     }
 
@@ -368,10 +380,23 @@ final class StatusItemController {
             )
         }
 
+        // A strip with no coloured gauge comes back as a template and is tinted by the layer, for
+        // free, on every frame. One with a coloured gauge has already resolved its colours into
+        // the bitmap — which is why the button's appearance goes in, so `labelColor` inside it
+        // means what the *menu bar* means rather than what the app does.
+        let image = ActivityRenderer.image(
+            for: entry,
+            readings: readings,
+            height: renderedSize,
+            tint: item.tint,
+            appearance: statusItem.button?.effectiveAppearance
+        )
+
         glyph.show(
-            ActivityRenderer.image(for: entry, readings: readings, height: renderedSize),
+            image,
             size: activitySize,
-            isHighlighted: isPresentingMenu
+            isHighlighted: isPresentingMenu,
+            colour: item.tint
         )
     }
 
@@ -442,7 +467,8 @@ final class StatusItemController {
                 app: primaryApp,
                 size: renderedSize,
                 running: isRunning,
-                showsIndicator: preferences.showRunningIndicator
+                showsIndicator: preferences.showRunningIndicator,
+                tint: item.tint
             )
         }
     }
@@ -516,9 +542,12 @@ final class StatusItemController {
     /// of menu is currently up.
     private func updatePresentedMenu() {
         guard isPresentingMenu, let menu = presentedMenu else { return }
-        MenuBuilder.updateActivityReadings(in: menu) { [metrics] metric in
-            metrics.latest(for: metric)
-        }
+        MenuBuilder.updateActivityReadings(
+            in: menu,
+            value: { [metrics] metric in metrics.latest(for: metric) },
+            detail: { [metrics] metric in metrics.detail(for: metric) },
+            processes: metrics.topProcesses
+        )
     }
 
     private func tooltip(title: String, isRunning: Bool) -> String {
@@ -587,6 +616,24 @@ final class StatusItemController {
     /// Requires the animator to be running, and not only as an optimisation: with the timer
     /// stopped there is nothing to advance the reaction, so the icon would draw one frame of it
     /// and sit there. Reduce Motion means *no* motion, not one frame of it.
+    // MARK: - Geometry
+
+    /// How much menu bar this item is actually taking, or `nil` before its window exists.
+    ///
+    /// Read by ``MenuBarSpaceMonitor`` rather than derived, because the real number already
+    /// includes whatever padding this version of macOS puts around a status item — a figure that
+    /// is not published anywhere and that a constant can only approximate.
+    var measuredWidth: Double? {
+        guard let width = statusItem.button?.window?.frame.width else { return nil }
+        return Double(width)
+    }
+
+    /// The right edge of this item's window in screen coordinates, and the screen it is on.
+    var screenPlacement: (rightEdge: Double, screen: NSScreen?)? {
+        guard let window = statusItem.button?.window else { return nil }
+        return (Double(window.frame.maxX), window.screen)
+    }
+
     func triggerReaction() {
         guard animatedIcon != nil, animator.isAnimating else { return }
 
@@ -634,12 +681,25 @@ final class StatusItemController {
             // left click for the way there is for an app — the item is a readout, not a launcher
             // — and its menu is where the exact numbers live, so making that harder to reach in
             // order to preserve a distinction the item does not have would be a net loss.
+            //
+            // Per-process sampling is switched on for exactly the span this menu is open, and
+            // switched off in the `defer` inside `present(_:)`. It is the one reading here that
+            // costs enough to be worth that bracketing — see ``SystemMetrics/ProcessSampler``.
+            if entry.showsTopProcesses {
+                metrics.setProcessSamplingEnabled(true) { [weak self] in
+                    self?.updatePresentedMenu()
+                }
+            }
             present(menus.activityMenu(
                 for: entry,
                 itemID: id,
                 readings: entry.gauges.reduce(into: [:]) { readings, gauge in
                     readings[gauge.metric] = metrics.latest(for: gauge.metric)
-                }
+                },
+                details: entry.requiredMetrics.reduce(into: [:]) { details, metric in
+                    details[metric] = metrics.detail(for: metric)
+                },
+                processes: metrics.topProcesses
             ))
 
         case .clipboard(let entry):
@@ -689,6 +749,10 @@ final class StatusItemController {
             statusItem.menu = nil
             isPresentingMenu = false
             presentedMenu = nil
+            // Unconditional, and cheap when it was never on: this is the only place the expensive
+            // sampler can be switched off, and leaving it running because the menu was dismissed
+            // by a route nobody thought of would turn a per-menu cost into a permanent one.
+            metrics.setProcessSamplingEnabled(false)
             glyph.invalidateTint()
             applyImage()
         }

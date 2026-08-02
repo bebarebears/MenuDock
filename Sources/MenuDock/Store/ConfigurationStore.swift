@@ -171,4 +171,75 @@ final class ConfigurationStore {
     func item(id: DockItem.ID) -> DockItem? {
         configuration.items.first { $0.id == id }
     }
+
+    // MARK: - Profiles
+
+    /// Creates a profile and switches to it.
+    ///
+    /// Switching immediately is the point: a profile that is created and then sits there does
+    /// nothing visible, and the user has no way to find out what it did. Because a brand-new
+    /// profile contains every item — membership defaults to "all", see ``DockItem/profileIDs`` —
+    /// switching to it changes nothing about the menu bar, which is exactly the right first
+    /// impression. The user then removes what they do not want from it.
+    @discardableResult
+    func addProfile(named name: String = "New Profile") -> Profile.ID {
+        let profile = Profile(name: name)
+        update {
+            $0.profiles.append(profile)
+            $0.activeProfileID = profile.id
+        }
+        return profile.id
+    }
+
+    func removeProfile(id: Profile.ID) {
+        update { configuration in
+            configuration.profiles.removeAll { $0.id == id }
+            if configuration.activeProfileID == id {
+                configuration.activeProfileID = nil
+            }
+            // Strip the deleted profile from every item's membership, and collapse a set that
+            // has become empty back to `nil`. Without the second half, deleting the last profile
+            // an item belonged to would leave it belonging to none — invisible under every
+            // profile, and with nothing in the UI to explain why.
+            for index in configuration.items.indices {
+                guard var membership = configuration.items[index].profileIDs else { continue }
+                membership.remove(id)
+                configuration.items[index].profileIDs = membership.isEmpty ? nil : membership
+            }
+        }
+    }
+
+    func renameProfile(id: Profile.ID, to name: String) {
+        update {
+            guard let index = $0.profiles.firstIndex(where: { $0.id == id }) else { return }
+            $0.profiles[index].name = name
+        }
+    }
+
+    func setProfileSymbol(id: Profile.ID, to symbolName: String) {
+        update {
+            guard let index = $0.profiles.firstIndex(where: { $0.id == id }) else { return }
+            $0.profiles[index].symbolName = symbolName
+        }
+    }
+
+    /// Switches the menu bar to a profile, or to `nil` for every item.
+    func activateProfile(_ id: Profile.ID?) {
+        update {
+            guard id == nil || $0.profiles.contains(where: { $0.id == id }) else { return }
+            $0.activeProfileID = id
+        }
+    }
+
+    /// Adds or removes one item from one profile.
+    func setMembership(_ isMember: Bool, ofItem itemID: DockItem.ID, inProfile profile: Profile.ID) {
+        update { configuration in
+            guard let index = configuration.index(of: itemID) else { return }
+            configuration.items[index].setMembership(
+                isMember,
+                ofProfile: profile,
+                allProfiles: configuration.profiles.map(\.id)
+            )
+        }
+    }
 }

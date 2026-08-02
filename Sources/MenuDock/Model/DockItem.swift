@@ -120,6 +120,26 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
     /// size knob for every icon source instead of one that only appears for custom images.
     var iconSize: Double?
 
+    /// A fixed colour for this item's icon, or `nil` to take the menu bar's own tint.
+    ///
+    /// Beside `iconSize` and for the same reason: it describes this slot rather than the artwork,
+    /// so a user who makes their Slack icon purple keeps it purple after swapping the glyph. See
+    /// ``IconTint`` for what a tint gives up in exchange for being recognisable.
+    var tint: IconTint?
+
+    /// How readily this item yields its place when the menu bar runs short. See ``ItemPriority``.
+    var priority: ItemPriority = .standard
+
+    /// Which profiles show this item, or `nil` for *all of them*.
+    ///
+    /// `nil` and "every profile" are deliberately the same state rather than two, and that is
+    /// what makes profiles a free upgrade: every item written before profiles existed decodes
+    /// with no membership, which reads as belonging everywhere, so a user who adds a profile
+    /// finds their menu bar unchanged instead of empty. An explicitly *empty* set means the same
+    /// thing for the same reason — an item in no profile at all would be one the user could
+    /// configure but never see, which is not a state worth being able to reach.
+    var profileIDs: Set<Profile.ID>?
+
     enum Kind: Hashable, Sendable {
         case application(AppEntry)
         case group(GroupEntry)
@@ -153,12 +173,22 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case id, kind, iconSize }
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, iconSize, tint, priority, profileIDs
+    }
 
-    init(id: UUID = UUID(), kind: Kind, iconSize: Double? = nil) {
+    init(id: UUID = UUID(),
+         kind: Kind,
+         iconSize: Double? = nil,
+         tint: IconTint? = nil,
+         priority: ItemPriority = .standard,
+         profileIDs: Set<Profile.ID>? = nil) {
         self.id = id
         self.kind = kind
         self.iconSize = iconSize
+        self.tint = tint
+        self.priority = priority
+        self.profileIDs = profileIDs
     }
 
     init(app: AppReference) {
@@ -184,6 +214,13 @@ nonisolated struct DockItem: Codable, Hashable, Sendable, Identifiable {
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         kind = try container.decode(Kind.self, forKey: .kind)
         iconSize = try container.decodeIfPresent(Double.self, forKey: .iconSize)
+        tint = try container.decodeIfPresent(IconTint.self, forKey: .tint)
+        // Tolerant of an unrecognised raw value as well as an absent key: a priority written by a
+        // newer MenuDock must not fail the decode of the whole configuration. See the note on
+        // `decodeTolerantly` in ``ActivityEntry``.
+        priority = try container.decodeTolerantly(ItemPriority.self, forKey: .priority,
+                                                  fallback: .standard)
+        profileIDs = try container.decodeIfPresent(Set<Profile.ID>.self, forKey: .profileIDs)
 
         // Migration: the size override used to live inside `IconSpec.custom`, where it applied
         // to one image rather than to the item. Lift it here and strip it from the spec, so
@@ -309,6 +346,36 @@ nonisolated extension DockItem {
     var clipboard: ClipboardEntry? {
         if case .clipboard(let entry) = kind { return entry }
         return nil
+    }
+
+    /// Whether this item appears while `profile` is the active one.
+    ///
+    /// A `nil` profile is "All Items", which shows everything; a `nil` or empty membership is
+    /// "every profile", which is shown by all of them. Both defaults point the same way on
+    /// purpose — nothing disappears until the user has said which profile it belongs to.
+    func isMember(ofProfile profile: Profile.ID?) -> Bool {
+        guard let profile else { return true }
+        guard let profileIDs, !profileIDs.isEmpty else { return true }
+        return profileIDs.contains(profile)
+    }
+
+    /// Adds or removes this item from one profile, normalising "in every profile" back to `nil`.
+    ///
+    /// Membership starts as `nil` — meaning *all* — so the first meaningful edit is a *removal*,
+    /// and removing one profile from "all of them" has to first spell out what "all of them"
+    /// currently is. Hence `allProfiles`: without it, unticking Work from a brand-new item would
+    /// silently mean "in no profile", and the item would vanish from every one of them at once.
+    mutating func setMembership(_ isMember: Bool, ofProfile profile: Profile.ID,
+                                allProfiles: [Profile.ID]) {
+        var membership = profileIDs ?? Set(allProfiles)
+        if isMember {
+            membership.insert(profile)
+        } else {
+            membership.remove(profile)
+        }
+        // Back to `nil` when it covers everything, so the config keeps saying "all" rather than
+        // enumerating a list that would then need updating every time a profile is created.
+        profileIDs = membership == Set(allProfiles) ? nil : membership
     }
 
     /// The size this item's icon should be drawn at, honouring its own override and clamped to

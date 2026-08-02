@@ -5,6 +5,73 @@ All notable changes to MenuDock are recorded here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **Profiles** — named subsets of the menu bar you switch between: Work, Personal, Presenting.
+  Switch from any item's menu or from the picker above the item list in Settings.
+  A profile is a *membership label*, not a second menu bar: there is still one list of items in one
+  order, and a profile decides which of them appear. An app in two profiles is one entry with one
+  icon, one name and one size, and the menu bar's identity diffing keeps working, so a profile
+  switch updates the items that changed rather than tearing down the whole row. A new profile
+  starts with every item in it, and an item that has never been assigned belongs to all of them —
+  so adding profiles to an existing setup changes nothing until you say what to leave out.
+- **Auto-hiding when the menu bar runs short.** A 14" MacBook has roughly a third the usable bar of
+  a large display once the notch and the app menus have taken their share, so a setup that fits
+  docked may not fit undocked — and macOS does not clip gracefully: items that do not fit are
+  silently not drawn, starting from the left. Each item now carries a priority (*Always show*,
+  *Normal*, *Hide first*) and MenuDock drops the low ones until the rest fit, restoring them when
+  the room comes back. Settings states the arithmetic behind the decision, hidden items stay in the
+  list dimmed rather than vanishing from it, and the whole thing is off by default because an icon
+  disappearing unasked reads as a crash.
+  The usable region is read from `NSScreen.auxiliaryTopRightArea` on a notched Mac and estimated
+  elsewhere; what other apps have taken is measured off the live window frames. What MenuDock wants
+  is computed from the model rather than measured, which is what stops the decision from depending
+  on its own outcome and oscillating.
+- **Four more things an Activity item can show.**
+  - **Battery** — charge level, with charging state and time remaining spelled out in the menu.
+    Read through `IOPowerSources`, so the estimate is macOS's own rather than one reinvented from
+    the current draw. Machines with no internal battery report nothing rather than 100%.
+  - **Thermal pressure** — `ProcessInfo.thermalState`, four-valued: Nominal, Fair, Serious,
+    Critical. Deliberately not a temperature in degrees: there is no unprivileged, documented way
+    to read one on Apple Silicon, and this answers the more useful question anyway — how much the
+    system is holding back because of heat.
+  - **Disk free** — space left on the startup volume, as a level rather than a rate, with the
+    figure in gigabytes in the menu. Uses the important-usage capacity Finder reports, and is
+    re-read every twenty seconds rather than every tick.
+  - **The three processes using the most CPU**, in the click-through menu. Sampled *only while that
+    menu is open*: answering it costs a `proc_pid_rusage` per process on the machine — measured at
+    ~4 ms, more than every other sampler put together — which would be absurd to pay once a second
+    for a menu that is open a few seconds a day.
+- **Gauges can colour themselves from the reading** — green when quiet, amber when busy, red when
+  it matters — with thresholds set per metric, because one rule is wrong for all of them. Battery
+  and free space are inverted, so they redden at the bottom of their range. Settings names the
+  exact figures for the metric being edited.
+  A coloured gauge cannot be a template image, so the whole strip stops being one and is redrawn
+  when the system appearance changes; monochrome gauges sharing it are given the colour AppKit
+  would have supplied. Off by default for that reason.
+- **A colour for any item's icon.** Ten palette colours plus a full picker, per item, alongside the
+  existing per-item size. Every colour is pulled to the middle of the luminance range so one value
+  reads on a light menu bar and a dark one. Artwork that already carries colour — an app's own
+  icon, a full-colour logo — is left alone, and Settings says so instead of offering a control that
+  would do nothing. Animated glyphs are tinted by the layer that already draws them, so a coloured
+  animated icon costs exactly what an uncoloured one does.
+
+### Changed
+- **Adding a metric to an Activity item now shows every metric at once**, with a symbol and a line
+  saying what it measures, instead of adding whichever was next and leaving you to change it with a
+  popup in the row. The old behaviour made the *set* of available metrics invisible: a user who did
+  not already know MenuDock could show disk write had no way to find out except by cycling until it
+  appeared.
+- The gauge list reads as a list — metric, and a summary of how it is drawn — with style, caption
+  and colour edited below it for whichever row is selected. Four unlabelled popups repeated down
+  the page fitted, barely, and read as a spreadsheet.
+- `ActivityMetric.widestCompactString` became `widestCompactStrings`. The level unit prints *words*
+  rather than figures, and words are not monospaced — `Fair` and `Crit` are the same four
+  characters and not the same width — so sizing a numeric gauge means measuring every string the
+  metric can produce rather than looking one up.
+- `docs/images/activity-styles.png` gains rows for the new metrics and for load colouring, and its
+  "every metric" row is split in two: as one row of eleven it set the whole sheet's width and
+  squashed the other fourteen rows to nothing.
+
 ## [0.2.0]
 
 ### Added

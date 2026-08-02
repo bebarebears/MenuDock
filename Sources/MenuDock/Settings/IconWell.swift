@@ -23,6 +23,8 @@ struct IconEditor: View {
     @Binding var spec: IconSpec
     /// This item's size override, or `nil` while it follows the global preference.
     @Binding var size: Double?
+    /// This item's colour, or `nil` while it takes the menu bar's own.
+    @Binding var tint: IconTint?
     /// `nil` for groups and folders, which have no single application to borrow an icon from.
     let app: AppReference?
     /// Which built-in glyph to fall back to when the user switches to the built-in source.
@@ -32,12 +34,14 @@ struct IconEditor: View {
         environment: AppEnvironment,
         spec: Binding<IconSpec>,
         size: Binding<Double?>,
+        tint: Binding<IconTint?>,
         app: AppReference?,
         defaultBuiltinID: String = "globe"
     ) {
         self.environment = environment
         self._spec = spec
         self._size = size
+        self._tint = tint
         self.app = app
         self.defaultBuiltinID = defaultBuiltinID
     }
@@ -45,7 +49,7 @@ struct IconEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 16) {
-                IconWell(environment: environment, spec: $spec, app: app)
+                IconWell(environment: environment, spec: $spec, tint: tint, app: app)
                 VStack(alignment: .leading, spacing: 8) {
                     sourcePicker
                     IconSourceNote(environment: environment, spec: spec, app: app)
@@ -62,11 +66,66 @@ struct IconEditor: View {
                 EmptyView()
             }
 
+            Divider().padding(.vertical, 2)
+            colourControls
+
             // Size applies to every source, not just custom artwork: a built-in glyph or an
             // app's own icon is just as likely to want to sit a point or two larger than its
             // neighbours, and the whole appeal of a per-item knob is that it works everywhere.
             Divider().padding(.vertical, 2)
             sizeControls
+        }
+    }
+
+    // MARK: - Colour
+
+    /// Whether a tint would visibly do anything to the current artwork.
+    ///
+    /// A tint only applies to template-rendered artwork — see ``IconTint`` — so for an app's own
+    /// icon, or for a colour image, the control would be a swatch grid that changes nothing. It
+    /// is left in place and explained rather than hidden, because a control that appears and
+    /// disappears as the source changes is harder to understand than one that says why it is off.
+    private var tintApplies: Bool {
+        // Asked of the renderer rather than re-derived here. `menuBarImage` gates the tint on
+        // exactly this answer, so a second copy of the rule would eventually offer an enabled
+        // swatch grid for artwork whose tint the renderer then discards.
+        guard let source = environment.icons.sourceImage(for: spec, app: app) else {
+            // Nothing chosen yet — a custom slot with no file. The control stays live, because
+            // whatever is dropped in next is far more likely to be a glyph than a photograph.
+            return true
+        }
+        return IconRenderer.shouldRenderAsTemplate(source, spec: spec)
+    }
+
+    private var colourControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("Colour")
+                TintPicker(tint: $tint, note: "")
+                    .disabled(!tintApplies)
+                    .opacity(tintApplies ? 1 : 0.5)
+            }
+
+            if tintApplies {
+                Text("""
+                    A colour replaces the menu bar's own tint for this item, so the icon stops \
+                    tracking Light and Dark. Useful for telling one grey glyph from another at a \
+                    glance.
+                    """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Label(
+                    "This artwork carries its own colour, so a tint would have nothing to do.",
+                    systemImage: "paintpalette"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: tint) { _, _ in
+            environment.icons.invalidateCache()
         }
     }
 
@@ -210,7 +269,8 @@ struct IconEditor: View {
                 .foregroundStyle(.secondary)
                 .padding(.trailing, 4)
 
-            Image(nsImage: environment.icons.image(for: spec, app: app, size: effective))
+            Image(nsImage: environment.icons.image(for: spec, app: app, size: effective,
+                                                   tint: tint))
             ForEach(["wifi", "battery.75percent"], id: \.self) { name in
                 Image(systemName: name)
                     .font(.system(size: defaultSize * 0.72))
@@ -245,9 +305,12 @@ struct IconEditor: View {
 struct IconWell: View {
     let environment: AppEnvironment
     @Binding var spec: IconSpec
+    /// Shown, not edited, here — the swatches live below the well.
+    var tint: IconTint?
     let app: AppReference?
 
     @State private var isTargeted = false
+
 
     var body: some View {
         ZStack {
@@ -287,13 +350,17 @@ struct IconWell: View {
                         )
                     )
                 ))
+                // Tinted by SwiftUI rather than by re-rendering, for the same reason the menu bar
+                // does it in a layer: the frames are shared and cached, and colouring a template
+                // costs nothing where rasterising a second coloured copy of every frame in the
+                // loop would cost a great deal.
                 .renderingMode(.template)
-                .foregroundStyle(.primary)
+                .foregroundStyle(tint.previewStyle)
             }
         } else {
             // Always 48pt: this well shows *what* the artwork is, at a size it picks itself.
             // How big it will be in the menu bar is the job of the actual-size strip.
-            Image(nsImage: environment.icons.image(for: spec, app: app, size: 48))
+            Image(nsImage: environment.icons.image(for: spec, app: app, size: 48, tint: tint))
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 48, height: 48)

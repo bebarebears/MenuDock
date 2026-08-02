@@ -1,6 +1,8 @@
+import AppKit
 import Darwin
 import Foundation
 import IOKit
+import IOKit.ps
 
 /// Raw readings of the system counters behind an Activity item.
 ///
@@ -516,6 +518,290 @@ enum SystemMetrics {
                 found.append(service)
             }
             return found
+        }
+    }
+
+    // MARK: - Battery
+
+    /// Charge level, plus the sentence that goes in the menu — charging state and time remaining.
+    ///
+    /// ## Why `IOPowerSources` rather than the registry
+    ///
+    /// This is the one metric here with a real public API, and it is worth using: `IOPSCopy…`
+    /// reads the same power-source dictionary the system's own battery menu reads, including the
+    /// estimator's time-remaining figure. Going to `AppleSmartBattery` in the IORegistry — which
+    /// is the usual route in code like this — gets the raw capacity registers and *not* the
+    /// estimate, which would then have to be reinvented badly from the current draw. macOS
+    /// already smooths that over minutes of history; there is nothing to gain by guessing at it.
+    ///
+    /// ## Machines with no battery
+    ///
+    /// A Mac mini, Studio, Pro or iMac has no internal battery, so this reports `nil` forever and
+    /// the gauge draws its empty state. That is the honest outcome — the alternative, reporting
+    /// 100%, would be a gauge that looks like it is working and is lying — and Settings says so
+    /// in words rather than leaving a permanently blank gauge to be interpreted.
+    struct BatterySampler {
+
+        /// Charge as a fraction, and a description of what the battery is doing.
+        func sample() -> (value: Double?, detail: String?) {
+            guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+                  let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue()
+                    as? [CFTypeRef]
+            else { return (nil, nil) }
+
+            for source in sources {
+                guard let description = IOPSGetPowerSourceDescription(blob, source)?
+                    .takeUnretainedValue() as? [String: Any] else { continue }
+                // Skip a UPS or a Bluetooth mouse, both of which turn up in this list.
+                guard description[kIOPSTypeKey] as? String == kIOPSInternalBatteryType else {
+                    continue
+                }
+
+                let current = (description[kIOPSCurrentCapacityKey] as? NSNumber)?.doubleValue
+                let maximum = (description[kIOPSMaxCapacityKey] as? NSNumber)?.doubleValue
+                guard let current, let maximum, maximum > 0 else { continue }
+
+                return (clamp01(current / maximum), detail(from: description))
+            }
+            return (nil, nil)
+        }
+
+        /// "Charging · 1:24 to full", "3:47 remaining", "Charged", "On AC power".
+        ///
+        /// The estimator returns −1 for "not known yet", which it does for a minute or two after
+        /// every plug and unplug while it re-learns the rate. Saying so — rather than printing a
+        /// nonsense duration or nothing at all — is why this distinguishes the cases.
+        private func detail(from description: [String: Any]) -> String {
+            let onAC = description[kIOPSPowerSourceStateKey] as? String == kIOPSACPowerValue
+            let isCharging = description[kIOPSIsChargingKey] as? Bool ?? false
+            let isCharged = description[kIOPSIsChargedKey] as? Bool ?? false
+
+            if isCharged { return "Charged" }
+
+            if isCharging {
+                let minutes = (description[kIOPSTimeToFullChargeKey] as? NSNumber)?.intValue ?? -1
+                return minutes > 0
+                    ? "Charging · \(Self.duration(minutes)) to full"
+                    : "Charging"
+            }
+
+            if onAC { return "On AC power" }
+
+            let minutes = (description[kIOPSTimeToEmptyKey] as? NSNumber)?.intValue ?? -1
+            return minutes > 0 ? "\(Self.duration(minutes)) remaining" : "On battery"
+        }
+
+        private static func duration(_ minutes: Int) -> String {
+            String(format: "%d:%02d", minutes / 60, minutes % 60)
+        }
+    }
+
+    // MARK: - Thermal
+
+    /// Thermal pressure, from `ProcessInfo`.
+    ///
+    /// The cheapest sampler here by a wide margin — a property read on a value the system keeps
+    /// current for its own purposes — and the only one that is entirely public API. See
+    /// ``ThermalLevel`` for why this and not a temperature in degrees.
+    struct ThermalSampler {
+        func sample() -> Double? {
+            ThermalLevel(ProcessInfo.processInfo.thermalState).rawValue
+        }
+    }
+
+    // MARK: - Disk space
+
+    /// Free space on the startup volume, as a fraction, plus the figure in bytes for the menu.
+    ///
+    /// ## Which "free" this is
+    ///
+    /// `volumeAvailableCapacityForImportantUsageKey`, not `volumeAvailableCapacityKey`. The two
+    /// differ by a lot on any Mac with Time Machine local snapshots — the plain key reports what
+    /// is free *right now*, while the important-usage key reports what the system would make
+    /// available by purging snapshots and caches, which is the number Finder shows and therefore
+    /// the number the user will compare this against. Reporting the smaller one would have the
+    /// gauge in the red while Finder says there is 200 GB free.
+    ///
+    /// ## Why this is a "level" and not a rate
+    ///
+    /// Everything else in this file is a difference between two readings. This is not: free space
+    /// is a quantity, so a single call answers it and there is no first-sample `nil` to explain.
+    /// It is also the slowest-moving thing MenuDock draws, which is why the result is cached for
+    /// a few seconds — a `statfs` on every tick to watch a number that changes hourly is the sort
+    /// of thing that makes a monitor cost more than what it monitors.
+    final class DiskSpaceSampler {
+        private var cached: (value: Double, detail: String, time: TimeInterval)?
+
+        /// How long a reading stands. Chosen to be far longer than any refresh interval and far
+        /// shorter than a user would notice: emptying the Trash updates the gauge within a
+        /// half-minute, and a downloading file moves it in steps rather than smoothly.
+        private static let validity: TimeInterval = 20
+
+        func sample() -> (value: Double?, detail: String?) {
+            let now = Date.timeIntervalSinceReferenceDate
+            if let cached, now - cached.time < Self.validity {
+                return (cached.value, cached.detail)
+            }
+
+            let volume = URL(fileURLWithPath: NSHomeDirectory())
+            guard let values = try? volume.resourceValues(forKeys: [
+                .volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey
+            ]),
+                let free = values.volumeAvailableCapacityForImportantUsage,
+                let total = values.volumeTotalCapacity, total > 0
+            else { return (nil, nil) }
+
+            let fraction = clamp01(Double(free) / Double(total))
+            let detail = "\(Self.bytes(Double(free))) free of \(Self.bytes(Double(total)))"
+            cached = (fraction, detail, now)
+            return (fraction, detail)
+        }
+
+        /// Decimal gigabytes, matching what Finder and the storage pane report. Binary units
+        /// would be more defensible and would disagree with every other number the user can see.
+        private static func bytes(_ value: Double) -> String {
+            value >= 1e12
+                ? String(format: "%.2f TB", value / 1e12)
+                : String(format: "%.1f GB", value / 1e9)
+        }
+    }
+
+    // MARK: - Processes
+
+    /// The busiest processes on the machine, by CPU time accumulated between two calls.
+    ///
+    /// ## This one is genuinely expensive, and that shapes everything about it
+    ///
+    /// Every other sampler in this file reads one counter, or one dictionary. This one asks the
+    /// kernel a question **per process**: `proc_listpids` to enumerate, then a `proc_pid_rusage`
+    /// for each of the four to six hundred processes on an ordinary Mac. That is two orders of
+    /// magnitude more syscalls than the whole rest of the file put together, and it is why this
+    /// is not on the timer — ``MetricsMonitor`` only runs it while an Activity menu is actually
+    /// open. See ``ActivityEntry/showsTopProcesses``.
+    ///
+    /// ## Why `proc_pid_rusage` and not `task_info`
+    ///
+    /// The textbook approach is `task_for_pid` followed by `task_info(TASK_BASIC_INFO)`, and it
+    /// does not work: `task_for_pid` on another process requires either root or the
+    /// `com.apple.system-task-ports` entitlement, so an ordinary app gets `KERN_FAILURE` for
+    /// everything it did not spawn. `proc_pid_rusage` needs neither — it answers for any process
+    /// owned by the same user, which is precisely the set the user cares about. Processes owned
+    /// by root or another user are skipped rather than reported as zero, because "the CPU is
+    /// busy and nothing is using it" is worse than an honest omission.
+    ///
+    /// ## Why the numbers do not add up to the CPU gauge
+    ///
+    /// They cannot, and should not be expected to. The CPU gauge is whole-machine utilisation
+    /// including the kernel and every other user's work; this is the share attributable to this
+    /// user's processes. On a busy machine the difference is `kernel_task` and the daemons.
+    final class ProcessSampler {
+
+        struct Entry: Sendable, Hashable {
+            let pid: pid_t
+            let name: String
+            /// Share of one core, so two fully busy threads read as 2.0. Matches the convention
+            /// Activity Monitor's "% CPU" column uses, where 100% is one core.
+            let share: Double
+        }
+
+        /// Cumulative CPU nanoseconds per pid at the last call.
+        private var previous: [pid_t: UInt64] = [:]
+        private var previousTime: TimeInterval?
+
+        /// Drops the baseline, so the next call establishes a fresh one.
+        ///
+        /// Called when sampling is switched off. Without it, a menu opened an hour after the last
+        /// one would compute its first "rate" over that entire hour — a process that used a
+        /// steady 100% for one minute of it would show as 1.7%, which is not wrong so much as
+        /// meaningless.
+        func reset() {
+            previous.removeAll(keepingCapacity: true)
+            previousTime = nil
+        }
+
+        /// The `limit` busiest processes, or `nil` on the first call after a reset.
+        func sample(limit: Int) -> [Entry]? {
+            let now = Date.timeIntervalSinceReferenceDate
+            guard let pids = Self.allPIDs() else { return nil }
+
+            var current: [pid_t: UInt64] = [:]
+            current.reserveCapacity(pids.count)
+            var deltas: [(pid: pid_t, nanoseconds: UInt64)] = []
+
+            for pid in pids where pid > 0 {
+                guard let nanoseconds = Self.cpuNanoseconds(of: pid) else { continue }
+                current[pid] = nanoseconds
+                // A pid absent from the previous pass is a process that has just started. It has
+                // no delta to report, and crediting it with its whole lifetime CPU would put
+                // every freshly launched app straight to the top of the list.
+                guard let before = previous[pid], nanoseconds > before else { continue }
+                deltas.append((pid, nanoseconds - before))
+            }
+
+            defer {
+                previous = current
+                previousTime = now
+            }
+            guard let previousTime, case let elapsed = now - previousTime, elapsed > 0.05 else {
+                return nil
+            }
+
+            return deltas
+                .sorted { $0.nanoseconds > $1.nanoseconds }
+                .prefix(limit)
+                .map { Entry(pid: $0.pid,
+                             name: Self.name(of: $0.pid),
+                             share: Double($0.nanoseconds) / 1e9 / elapsed) }
+        }
+
+        /// Every pid on the machine.
+        ///
+        /// Called twice: once with a null buffer to learn the size, once to fill it. The size can
+        /// grow between the two calls, so the buffer is over-allocated and the *returned* byte
+        /// count decides how much of it is real — reading the whole buffer would report stale
+        /// pids from a previous pass as live processes.
+        private static func allPIDs() -> [pid_t]? {
+            let sizing = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
+            guard sizing > 0 else { return nil }
+
+            let capacity = Int(sizing) / MemoryLayout<pid_t>.size + 32
+            var pids = [pid_t](repeating: 0, count: capacity)
+            let written = pids.withUnsafeMutableBufferPointer { buffer -> Int32 in
+                proc_listpids(UInt32(PROC_ALL_PIDS), 0, buffer.baseAddress,
+                              Int32(buffer.count * MemoryLayout<pid_t>.size))
+            }
+            guard written > 0 else { return nil }
+            return Array(pids.prefix(Int(written) / MemoryLayout<pid_t>.size))
+        }
+
+        /// User plus system CPU time consumed since the process started, in nanoseconds.
+        private static func cpuNanoseconds(of pid: pid_t) -> UInt64? {
+            var info = rusage_info_v4()
+            let result = withUnsafeMutablePointer(to: &info) { pointer in
+                pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { rebound in
+                    proc_pid_rusage(pid, RUSAGE_INFO_V4, rebound)
+                }
+            }
+            // Non-zero for anything this user does not own, which is expected and common.
+            guard result == 0 else { return nil }
+            return info.ri_user_time &+ info.ri_system_time
+        }
+
+        /// The name to show. Only ever called for the handful of processes that made the cut.
+        ///
+        /// `NSRunningApplication` first, because it knows the *localised* name a user would
+        /// recognise — "Google Chrome" where `proc_name` gives the executable, which for a helper
+        /// is a truncated "Google Chrome He". Falls back to the executable for everything without
+        /// a bundle, which is most of what is running.
+        private static func name(of pid: pid_t) -> String {
+            if let app = NSRunningApplication(processIdentifier: pid),
+               let name = app.localizedName, !name.isEmpty {
+                return name
+            }
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            let length = proc_name(pid, &buffer, UInt32(buffer.count))
+            guard length > 0 else { return "PID \(pid)" }
+            return String(cString: buffer)
         }
     }
 

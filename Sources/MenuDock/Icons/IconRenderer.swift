@@ -21,11 +21,16 @@ enum IconRenderer {
     private static let indicatorLane: CGFloat = 4
     private static let indicatorRadius: CGFloat = 1.5
 
+    /// - Parameter tint: a fixed colour for this item, or `nil` to leave the artwork alone.
+    ///   **Ignored for artwork that is not template-rendered**, and deliberately so: an app's own
+    ///   icon or a full-colour logo already carries its own colour, and forcing another one over
+    ///   the top produces a silhouette rather than a tinted icon. See ``IconTint``.
     static func menuBarImage(
         from source: NSImage?,
         spec: IconSpec,
         size: Double,
-        showsRunningDot: Bool
+        showsRunningDot: Bool,
+        tint: IconTint? = nil
     ) -> NSImage {
         let edge = CGFloat(size)
         let canvas = NSSize(width: edge, height: edge)
@@ -35,10 +40,15 @@ enum IconRenderer {
         }
 
         let template = shouldRenderAsTemplate(source, spec: spec)
+        // A tint only means anything for artwork whose colour AppKit was going to supply.
+        let tint = template ? tint : nil
 
         // Fast path: no compositing needed, so hand back the original representation with
         // only its metadata adjusted. Vector stays vector.
-        if !showsRunningDot {
+        //
+        // A tint takes it off this path — colouring the artwork means rasterising it, since the
+        // whole point is that the pixels are no longer a mask for AppKit to fill.
+        if !showsRunningDot, tint == nil {
             guard let copy = source.copy() as? NSImage else { return placeholder(size: canvas) }
             copy.size = aspectFit(copy.size, into: canvas)
             copy.isTemplate = template
@@ -74,9 +84,13 @@ enum IconRenderer {
                 height: indicatorRadius * 2
             ))
             dot.fill()
+
+            // The dot is drawn *before* the tint so it takes the colour too — a purple icon with
+            // a black dot under it looks like two unrelated things stacked, not one item.
+            applyTint(tint, over: canvas)
         }
 
-        composed.isTemplate = template
+        composed.isTemplate = template && tint == nil
         return composed
     }
 
@@ -92,7 +106,8 @@ enum IconRenderer {
         builtin icon: BuiltinIcon,
         size: Double,
         showsRunningDot: Bool,
-        phase: Double
+        phase: Double,
+        tint: IconTint? = nil
     ) -> NSImage {
         let edge = CGFloat(size)
         let canvas = NSSize(width: edge, height: edge)
@@ -114,16 +129,36 @@ enum IconRenderer {
                     height: indicatorRadius * 2
                 )).fill()
             }
+            applyTint(tint, over: canvas)
         }
 
-        // Built-ins are monochrome by construction, so templating is unconditional.
-        image.isTemplate = true
+        // Built-ins are monochrome by construction, so templating is unconditional — until a
+        // tint says the colour is the user's to choose rather than the menu bar's.
+        image.isTemplate = tint == nil
         return image
+    }
+
+    /// Recolours whatever has already been drawn into the current context.
+    ///
+    /// `.sourceAtop` is the whole trick: it paints the colour only where there are already
+    /// non-transparent pixels, and *scales by their alpha*. So a glyph's antialiased edges stay
+    /// antialiased and its internal opacity levels — the faint track under a bar, a half-opacity
+    /// highlight — survive as lighter shades of the tint rather than being flattened to one
+    /// colour. Masking a solid fill would lose all of that.
+    private static func applyTint(_ tint: IconTint?, over canvas: NSSize) {
+        guard let tint else { return }
+        tint.color.set()
+        NSRect(origin: .zero, size: canvas).fill(using: .sourceAtop)
     }
 
     // MARK: - Template decision
 
-    private static func shouldRenderAsTemplate(_ image: NSImage, spec: IconSpec) -> Bool {
+    /// Whether this artwork will be reduced to an alpha mask and coloured by AppKit.
+    ///
+    /// Not private, for the same reason ``automaticDecision(for:)`` below is not: Settings has to
+    /// know the answer to say whether a tint would do anything, and re-deriving it there would be
+    /// two implementations of one rule that silently disagree the day either changes.
+    static func shouldRenderAsTemplate(_ image: NSImage, spec: IconSpec) -> Bool {
         switch spec {
         case .appIcon:
             // Real app icons are full-colour artwork; templating them yields a blob.

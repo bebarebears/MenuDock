@@ -25,11 +25,14 @@ Sources/MenuDock/
 │   ├── AppReference.swift         relocation-tolerant pointer to an installed app
 │   ├── FolderReference.swift      relocation-tolerant pointer to a folder
 │   ├── IconSpec.swift             appIcon | symbol | builtin | custom(file, renderingMode)
-│   ├── ActivityEntry.swift        gauges: metric x style x caption, + refresh interval
+│   ├── IconTint.swift             a fixed colour, the palette, and the severity colours
+│   ├── Profile.swift              a named subset of the bar, + per-item hiding priority
+│   ├── ActivityEntry.swift        gauges: metric x style x caption x colouring, + interval
 │   ├── ClipboardEntry.swift       retention, capture rules, shortcut + auto-paste prefs
 │   ├── ClipboardItem.swift        one captured copy: metadata only, payload on disk
 │   ├── DockItem.swift             one status item: .application, .group, .folder,
-│   │                              .activity or .clipboard (the last two, one each)
+│   │                              .activity or .clipboard (the last two, one each),
+│   │                              plus its size, tint, priority and profile membership
 │   └── Configuration.swift        the on-disk document + schemaVersion
 ├── Store/
 │   ├── ConfigurationStore.swift   @Observable source of truth, debounced atomic writes
@@ -38,8 +41,10 @@ Sources/MenuDock/
 │   ├── AppLauncher.swift          launch / activate / hide / quit via NSWorkspace
 │   ├── RunningAppsMonitor.swift   push-based running-state tracking
 │   ├── InstalledAppsIndex.swift   background scan of /Applications for the picker
-│   ├── SystemMetrics.swift        kernel counters: CPU, memory, GPU, network, disk
+│   ├── SystemMetrics.swift        kernel counters: CPU, memory, GPU, network, disk,
+│   │                              power, battery, thermal, free space, per-process CPU
 │   ├── MetricsMonitor.swift       one timer, demand-gated samplers, history windows
+│   ├── MenuBarSpaceMonitor.swift  will it all fit? what to drop if not
 │   ├── DisplayActivityMonitor.swift  can anyone see the menu bar? (shared by every timer)
 │   ├── ClipboardHistoryStore.swift   JSON index + one payload file per item
 │   ├── ClipboardMonitor.swift     changeCount polling, type routing, privacy filters
@@ -67,6 +72,7 @@ Sources/MenuDock/
 │   └── ClipboardPanelView.swift     the dropdown's SwiftUI contents
 └── Settings/                      SwiftUI, hosted in a plain NSWindow
     ├── AddItemPopup.swift         the + menu, drawn inside the window
+    ├── MetricPicker.swift         every metric at once, + the shared colour swatches
     ├── ActivityEditor.swift       gauge list + a preview that is the real renderer
     └── ClipboardEditor.swift      retention, capture rules, shortcut, permission state
 
@@ -76,7 +82,7 @@ Tools/RenderActivity/            draws docs/images/activity-styles.png (`make ac
 
 ---
 
-## The ten decisions that shape everything
+## The twelve decisions that shape everything
 
 ### 1. One `NSStatusItem` per entry, reconciled by identity — and the list is the order
 
@@ -356,6 +362,92 @@ file that arrives with two — hand-edited, merged between Macs, or written by a
 the rule — which is exactly the case the UI cannot see. It keeps the *leftmost*, because this
 array is also the menu bar's order and promoting the other would move a familiar icon for no
 visible reason.
+
+### 11. Profiles filter one list; they never own separate ones
+
+The obvious model is that each profile holds its own `[DockItem]` and switching swaps one array for
+another. It is wrong here in three separate ways, and they compound.
+
+It **duplicates every item in more than one profile**, which is most of them — a Chrome icon in
+both Work and Personal becomes two entries to rename, re-skin and resize independently, and they
+drift the moment one is edited. It **defeats decision 1**: two arrays means two sets of ids for the
+same icon, so every switch is a full rebuild rather than a diff, with every icon flickering out of
+the bar and back in a different order because `autosaveName`-less positions come from creation
+order. And it **doubles the number of places a setting lives**.
+
+So a profile is a membership *label* and the items carry the labels — `DockItem.profileIDs`, a
+`Set<Profile.ID>?` where `nil` means every profile. Putting it on the item rather than listing
+members on the profile is what makes the migration free: an item written before profiles existed
+has no membership recorded, which reads as "belongs to all", so creating a profile changes nothing
+until the user says otherwise. The reverse direction would need every profile rewritten whenever an
+item was added, and would let the two representations disagree about an id.
+
+The one subtlety is that the first meaningful edit is a *removal*, and removing one profile from
+"all of them" has to first spell out what "all of them" currently is — hence
+`setMembership(_:ofProfile:allProfiles:)`, which expands `nil` to the full set, applies the change,
+and collapses back to `nil` if it still covers everything. Without the expansion, unticking one
+profile on a fresh item would mean "in no profile", and it would vanish from every one at once.
+
+### 12. Auto-hiding measures what it can and *derives* what it cannot
+
+The menu bar is the only container in macOS with no scrolling, no overflow, and no API for how much
+is left. Items that do not fit are not clipped — they are not drawn, starting from the left, and a
+status item the window server declined to place still reports an ordinary frame. So MenuDock cannot
+detect the failure after the fact; it has to predict it.
+
+`MenuBarSpaceMonitor` compares three quantities, and which are known matters:
+
+- **The usable region** is known on a notched Mac — `NSScreen.auxiliaryTopRightArea` is exactly the
+  strip a status item can occupy. Elsewhere the limit is the frontmost app's menus, which nothing
+  publishes, so `appMenuReserve` is a deliberately generous guess. The failure modes are not
+  symmetric: guessing high hides an item the user can see and switch back on, guessing low lets
+  macOS silently clip one.
+- **What other apps have taken** is measured — everything between MenuDock's rightmost status item
+  and the screen's right edge — and only trusted from the state where nothing is hidden, since
+  that is the only state where our own layout is not distorting it.
+- **What MenuDock wants** is computed from the model, and this is the load-bearing one. Measuring
+  it would make the decision depend on its own outcome: hide an item, the remaining ones shift, the
+  measurement changes, the next pass concludes differently, and the bar oscillates once per run
+  loop turn. Widths measured while an item was on screen are remembered in `knownWidths` for
+  exactly this reason — a hidden item keeps the width it had rather than falling back to an
+  estimate that is a slightly different number.
+
+The evaluation runs a run loop turn *after* reconcile, because a status item created a microsecond
+ago has no window to measure. It closes a loop — evaluate changes the hidden set, which reconciles,
+which evaluates again — and terminates because the second pass has the same inputs as the first.
+`restoreHysteresis` breaks the remaining tie, where an item whose width is exactly the shortfall
+would free precisely enough room to show it.
+
+The whole subsystem is inert when switched off: `scheduleSpaceCheck` returns immediately unless the
+preference is on or something is currently hidden, so a user who never enables it pays one boolean
+per reconcile.
+
+### On colour, and why it is always the opt-out
+
+Two features added colour to a menu bar that had deliberately had none: per-item tints, and
+load-coloured Activity gauges. Both are opt-in, and the reason is the same in both cases — a
+template image is not merely the default, it is the thing that makes an icon *belong* in the bar.
+AppKit reduces it to an alpha mask and supplies the colour, which gets Light and Dark,
+translucency over a wallpaper, and inversion under an open menu, all exactly in step with the
+clock. Colour gives up every one of those.
+
+So the colour paths are arranged to be as cheap as possible and to stay off the common path:
+
+- An **animated glyph** is tinted by `GlyphLayer`, which already masks a flat-coloured layer — the
+  tint is one property assignment, and the frame cache stays shared and uncoloured.
+- A **static icon** is composited once with `.sourceAtop`, which paints only where pixels already
+  exist and scales by their alpha, so antialiased edges and internal opacity levels survive as
+  lighter shades rather than flattening. It is cached in `IconLibrary` under a key that includes
+  the tint.
+- An **Activity strip** stays a template until *any* gauge in it asks for colour, at which point
+  the whole strip goes colour and the monochrome gauges beside it are handed the `labelColor` that
+  AppKit would have used — resolved against the status item button's appearance, not the app's,
+  since a translucent bar over a light wallpaper can be in the opposite appearance from the
+  settings window.
+
+The one thing colour cannot keep is the inversion under an open menu. A tinted *template* still
+inverts, because it is still a mask and a dark blue glyph on the blue selection fill is unreadable.
+A multi-coloured image has no single answer, so it keeps its colours.
 
 ## Installing, and the app icon
 

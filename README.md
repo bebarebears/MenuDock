@@ -85,18 +85,34 @@ Several apps behind a single icon, as a dropdown. One slot in the bar, one conte
 ### Activity
 
 A live readout of your machine: **CPU, GPU, power in watts, memory, network up and down, disk read
-and write.** Put as many metrics as you like behind one icon, draw each as a **graph, bar, ring or
-number**, and caption it with nothing, a letter or a word. The item sizes itself — you never set a
-width.
+and write, battery, thermal pressure and free disk space.** Put as many metrics as you like behind
+one icon, draw each as a **graph, bar, ring or number**, and caption it with nothing, a letter or a
+word. The item sizes itself — you never set a width.
+
+Each gauge can also **colour itself from the reading** — green while quiet, amber when busy, red
+when it matters — with the thresholds set per metric, because one rule would be wrong for all of
+them. 70% memory is an ordinary Tuesday; 70% battery is nothing to report; 20% free disk space is
+worth knowing about. Battery and free space count *down*, so their gauges go red at the bottom of
+the range rather than the top. Settings names the exact figures for whichever metric you are
+looking at.
 
 <div align="center">
   <img src="docs/images/activity-styles.png" width="860" alt="Every Activity gauge style rendered on a light and a dark menu bar at three sizes">
   <br>
-  <sub>Every style, at 16 / 18 / 22 pt, Light and Dark. Template images, so they take the bar's own tint.</sub>
+  <sub>Every style, at 16 / 18 / 22 pt, Light and Dark. Monochrome gauges are template images, so
+  they take the bar's own tint; load-coloured ones resolve their own colour for each appearance.</sub>
 </div>
 
 Click it and every reading appears in full — `11.9 MB/s`, not the four characters that fit up
-there — and keeps updating while the menu is open.
+there — and keeps updating while the menu is open. Battery adds what it is doing (`Charging · 1:24
+to full`) and free space adds the figure in gigabytes, since neither is a number you can read off a
+percentage.
+
+The same menu lists **the three processes using the most CPU**, so "why are the fans on" is one
+click rather than a trip to Activity Monitor. That one is measured only while the menu is open —
+answering it means a system call per running process, which is more expensive than every other
+reading here put together, and it would be absurd to pay it once a second for a menu that is open
+four seconds a day.
 
 <div align="center">
   <img src="docs/images/activity-menu.png" width="380" alt="An Activity item's menu, showing CPU at 4.1% and Memory at 39.8%">
@@ -114,6 +130,31 @@ touches the GPU or the network. Measured on an M5, Release build, once a second:
 
 Sampling stops completely behind a fullscreen app, on a locked or sleeping screen, and on a
 switched-away session — and the interval doubles in Low Power Mode.
+
+<details>
+<summary>About the battery, the thermometer and the free space</summary>
+
+<br>
+
+**Battery** is read through `IOPowerSources`, the same public API the system's own battery menu
+uses — so the time remaining is macOS's own estimate, smoothed over minutes of history, rather than
+something reinvented from the current draw. A Mac with no internal battery reports nothing and the
+gauge stays empty, which is the honest answer.
+
+**Thermal pressure is not a temperature**, and that is deliberate. There is no unprivileged,
+documented way to read a die temperature on Apple Silicon — the routes that exist are private SMC
+or IOHID sensor clients that break between releases, and a number scraped from one of those would
+look far more authoritative than it is. What MenuDock shows is `ProcessInfo.thermalState`, which is
+public, free to read, and four-valued: **Nominal, Fair, Serious, Critical**. It answers a better
+question than degrees anyway — not "how hot is the chip" but "how much is the system holding back
+because of heat", which is the part that explains why the machine feels slow.
+
+**Free space** is the important-usage figure, the one Finder shows, rather than what is free at
+this instant — the two differ by a lot on any Mac with Time Machine local snapshots, and reporting
+the smaller one would put the gauge in the red while Finder says there is 200 GB free. It is
+re-read every twenty seconds rather than every tick, because it is the slowest-moving thing here.
+
+</details>
 
 <details>
 <summary>About the watts</summary>
@@ -204,9 +245,18 @@ the screen.
   <img src="docs/images/settings.png" width="820" alt="The MenuDock settings window: the item list on the left, the built-in icon gallery and size controls on the right">
 </div>
 
-Pick an icon source, override the size for that one item, rename it, reorder by dragging — the menu
-bar follows the list. The size control previews at **true size** against real system items, because
-16 pt and 19 pt are indistinguishable in a large preview well.
+Pick an icon source, **give it a colour**, override the size for that one item, rename it, reorder
+by dragging — the menu bar follows the list. The size control previews at **true size** against
+real system items, because 16 pt and 19 pt are indistinguishable in a large preview well.
+
+**Colour is the opt-out, not the default.** Every icon is a template image by default, which is why
+they look like they belong up there: they track Light and Dark, translucency over a wallpaper, and
+the inverted state under an open menu, exactly in step with the clock beside them. A tint gives all
+of that up for one thing in return — telling one grey glyph from another at a glance in a menu bar
+with nine of them. Ten colours are offered, each pulled to the middle of the luminance range so it
+reads on a light bar *and* a dark one, and any colour at all is a click further. Artwork that
+already carries its own colour — an app's icon, a full-colour logo — is left alone, and Settings
+says so rather than offering a control that does nothing.
 
 Apps, folders and groups can be added as often as you like. **Activity and Clipboard are one each** —
 a second of either would sample the same counters or watch the same pasteboard twice — so the **+**
@@ -222,6 +272,39 @@ menu shows them ticked off once you have one.
 **It stays out of the way.** Animation is suppressed entirely under Reduce Motion, pauses when your
 screen sleeps or locks, and halves its frame rate in Low Power Mode. Steady-state CPU is under 1%,
 and turning animation off costs exactly 0.0%.
+
+---
+
+## Profiles, and running out of room
+
+### Profiles
+
+A profile is a **named subset of your menu bar** — Work, Personal, Presenting. Switch from any
+item's menu, or from the picker above the list in Settings.
+
+Profiles do not own separate menu bars. There is one list of items, in one order, and a profile
+decides which of them appear — so an app that belongs to both Work and Personal is *one* entry with
+one icon, one name and one size, not two that drift apart the moment you edit one of them. A new
+profile starts with everything in it, so creating one changes nothing until you say what it leaves
+out, and an item you have never assigned belongs to all of them.
+
+### Auto-hiding
+
+A 14" MacBook has roughly a **third** the usable menu bar of a large display, once the notch and
+the frontmost app's menus have taken their share. So a setup that is comfortable docked is over
+budget the moment you unplug — and macOS does not handle that gracefully. Items that do not fit are
+not clipped or stacked; they are silently not drawn, and the ones that vanish are the leftmost,
+which is to say the ones you arranged first.
+
+Switch on **Hide items when the menu bar runs out of room** and MenuDock makes that choice instead
+of leaving it to the window server. Every item carries a priority — *Always show*, *Normal*, or
+*Hide first* — and the low ones drop out until the rest fit. Plug the display back in and they come
+straight back. Settings shows the arithmetic it used (`Everything fits — 511 pt of 1293 pt used`),
+so a missing icon always has a stated reason, and hidden items stay in the list where you can find
+them, dimmed rather than gone.
+
+It is **off by default**, and it has to be: an icon disappearing without having been asked to is
+indistinguishable from a crash.
 
 Your setup lives in `~/Library/Application Support/MenuDock/`. Custom icons are **copied** in, so
 clearing out `~/Downloads` never breaks your menu bar.
